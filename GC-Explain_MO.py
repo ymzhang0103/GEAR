@@ -35,19 +35,6 @@ def main(iteration_num, optimal_method, loss_type, hidden_layer, dominant_loss, 
     skip = 5
     topk = 5
 
-    '''def acc(adj, insert):
-        real = []
-        pred = []
-        mask = explainer.masked_adj.cpu().detach().numpy()
-        adj = coo_matrix(adj)
-        for r,c in list(zip(adj.row,adj.col)):
-            if r>=insert and r<insert+skip and c>=insert and c<insert+skip:
-                real.append(1)
-            else:
-                real.append(0)
-            pred.append(mask[r][c])
-        return real, pred'''
-    
     def acc(sub_adj, sub_edge_label):
         mask = explainer.masked_adj.cpu().detach().numpy()
         real = []
@@ -65,47 +52,6 @@ def main(iteration_num, optimal_method, loss_type, hidden_layer, dominant_loss, 
         if len(np.unique(real))==1 or len(np.unique(pred))==1:
             return -1, [], []
         return roc_auc_score(real, pred), real, pred
-
-    '''def plot(adj, label, graphid, iteration):
-        after_adj_dense = explainer.masked_adj.cpu().detach().numpy()
-        after_adj = coo_matrix(after_adj_dense)
-
-        rcd = np.concatenate(
-            [np.expand_dims(after_adj.row, -1), np.expand_dims(after_adj.col, -1), np.expand_dims(after_adj.data, -1)], -1)
-        pos_edges = []
-        filter_edges = []
-        edge_weights = np.triu(after_adj_dense).flatten()
-        sorted_edge_weights = np.sort(edge_weights)
-        thres_index = max(int(edge_weights.shape[0] - topk), 0)
-        thres = sorted_edge_weights[thres_index]
-
-        for r, c, d in rcd:
-            if r<c:
-                continue
-            if d >= thres:
-                pos_edges.append((r, c))
-            filter_edges.append((r, c))
-
-        G = nx.from_numpy_matrix(adj.cpu().detach().numpy())
-        pos = nx.kamada_kawai_layout(G)
-
-        colors = ['orange', 'lime', 'red', 'blue', 'maroon', 'brown', 'darkslategray', 'paleturquoise', 'darksalmon',
-                'slategray', 'mediumseagreen', 'mediumblue', 'orchid']
-
-        # nodes
-        nmb_nodes = after_adj_dense.shape[0]
-        node_filter = []
-        for node in range(nmb_nodes):
-            if node in G.nodes():
-                node_filter.append(node)
-
-        nx.draw_networkx_nodes(G, pos, nodelist=node_filter, node_color=colors[0], node_size=300)
-        nx.draw_networkx_edges(G, pos, width=2, edge_color='grey')
-        nx.draw_networkx_edges(G, pos, edgelist=pos_edges, width=7)
-        plt.axis('off')
-        #plt.show()
-        plt.savefig(save_map + str(iteration) + "/" + str(graphid) + ".png")
-        plt.clf()'''
 
 
     def test(iteration, indices, model, explainer, topk_arr, plot_flag=False):
@@ -190,7 +136,10 @@ def main(iteration_num, optimal_method, loss_type, hidden_layer, dominant_loss, 
                                 figname=os.path.join(save_map + str(iteration), f"example_{graphid}_4.pdf"))
 
         if args.dataset == "Mutagenicity" or args.dataset =="Mutagenicity_full":  #args.dataset=="MUTAG":
-            auc = roc_auc_score(reals,preds)
+            if len(np.unique(reals))<=1 or len(np.unique(preds))<=1:
+                auc = -1
+            else:
+                auc = roc_auc_score(reals,preds)
         else:
             auc = 0
         ndcg = np.mean(ndcgs)
@@ -297,12 +246,12 @@ def main(iteration_num, optimal_method, loss_type, hidden_layer, dominant_loss, 
                     dominant_index, modify_index_arr, coslist, grads, grads_new = optimizer.pc_backward_dominant(losses, dominant_index)
                 else:
                     modify_index_arr, coslist, grads, grads_new = optimizer.pc_backward(losses)
-            elif "GradVac" in optimal_method:
+            elif "GEAR" in optimal_method:
                 if dominant_loss[1] is not None:
-                    modify_index_arr, coslist, cur_sim_obj, grads, grads_new= optimizer.pc_backward_gradvac_dominant(losses, dominant_index, sim_obj)
+                    modify_index_arr, coslist, cur_sim_obj, grads, grads_new= optimizer.backward_adjust_grad_dominant(losses, dominant_index, sim_obj)
                     sim_obj = cur_sim_obj
                 else:
-                    modify_index_arr, coslist, cur_sim_obj, grads, grads_new = optimizer.pc_backward_gradvac(losses, sim_obj)
+                    modify_index_arr, coslist, cur_sim_obj, grads, grads_new = optimizer.backward_adjust_grad(losses, sim_obj)
                     sim_obj = cur_sim_obj
             #torch.nn.utils.clip_grad_value_(explainer.elayers.parameters(), clip_value_max)
             optimizer.step()
@@ -551,8 +500,8 @@ def main(iteration_num, optimal_method, loss_type, hidden_layer, dominant_loss, 
     args.seed = 2023
     
 
-    args.dataset_root = "/home/liuli/zhangym/torch_projects/datasets"
-    args.dataset = "Mutagenicity_full"   #Graph_Twitter, Graph_SST5, Mutagenicity, MUTAG, NCI1
+    args.dataset_root = "../datasets"
+    args.dataset = "Graph_Twitter"   #Graph_Twitter, Graph_SST5, Mutagenicity_full, MUTAG, NCI1
     save_map = "MO_LISA_TEST_LOGS_NEW/"+args.dataset.upper() +"_loss"
     save_map = save_map + "_" + loss_type
     if hidden_layer:
@@ -636,30 +585,12 @@ def main(iteration_num, optimal_method, loss_type, hidden_layer, dominant_loss, 
     fidelityminus_complete_nodes_arr = []
     finalfidelity_complete_nodes_arr = []
     sparsity_nodes_arr = []
-    for iteration in range(5):
+    for iteration in range(1):
         print("Starting iteration: {}".format(iteration))
         if not os.path.exists(save_map+str(iteration)):
             os.makedirs(save_map+str(iteration))
         args.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         
-        #CELL 1
-        '''
-        with open('datasets/Mutagenicity (1).pkl','rb') as fin:
-            adjs, features, labels = pkl.load(fin)
-        
-        model = GCN(input_dim=features.shape[1:], output_dim=labels.shape[1], device=device)
-        model.to(device)
-
-        if args.bn and args.concat:
-            model.load_state_dict(torch.load('model_weights/GCN_BA2motif_bn_concat.pt'))
-        elif args.bn: 
-            model.load_state_dict(torch.load('model_weights/GCN_BA2motif_bn.pt'))
-        elif args.concat:
-            model.load_state_dict(torch.load('model_weights/GCN_BA2motif_concat.pt'))      
-        else:
-            model.load_state_dict(torch.load('model_weights/GCN_BA2motif_BEST.pt'))
-        model.eval()
-        '''
         dataset = get_dataset(args.dataset_root, args.dataset)
         dataset.data.x = dataset.data.x.float()
         dataset.data.y = dataset.data.y.squeeze().long()
@@ -682,7 +613,7 @@ def main(iteration_num, optimal_method, loss_type, hidden_layer, dominant_loss, 
         #print("eval_indices", eval_indices)
 
         #load trained GCN (survey)
-        GNNmodel_ckpt_path = osp.join('checkpoint', args.dataset+'_'+str(iteration), 'gcn_best.pth') 
+        GNNmodel_ckpt_path = osp.join('GNN_checkpoint', args.dataset+'_'+str(iteration), 'gcn_best.pth') 
         model = load_gnnNets_GC(GNNmodel_ckpt_path, input_dim=dataset.num_node_features, output_dim=dataset.num_classes, device = args.device)
         model.eval()
 
@@ -1211,22 +1142,24 @@ def test_explainmodel():
 
 
 if __name__ == "__main__":
-    iteration = 5
-    optimal_method_arr = ["weightsum"]  #weightsum, MO-PCGrad, MO-GradVac, MO-CAGrad
+    iteration = 1
+    optimal_method_arr = ["MO-GEAR"]  #weightsum, MO-PCGrad, MO-GEAR, MO-CAGrad
     loss_type_arr = ["pdiff_hidden_CF_LM_conn"]    #"ce", "ce_hidden", "kl", "kl_hidden", "pl_value", "pl_value_hidden"
     for optimal_method in optimal_method_arr:
         for loss_type in loss_type_arr: 
             if optimal_method == "weightsum":
-                coff_arr = [5.0, 10.0, 50.0, 100.0]
+                coff_arr =[5.0, 10.0]     #[5.0, 10.0, 50.0, 100.0]
                 for coff in coff_arr:
                     main(iteration, optimal_method, loss_type, "alllayer", (None,None), None, coff)
             elif  optimal_method == "getGrad":
                 main(iteration, optimal_method, loss_type, "alllayer", ("pdiff-CF-mean",[0,2]), None, None)
             elif "MO" in optimal_method:
                 #dominant_loss_dic = {"pdiff-LM-mean": [0,3], "hidden-LM-mean":[1,3]}     #{"KL":0, "hidden":1}  # "PL":0, "value":1, "hidden":2 , "mask":3, "con":4, "CF":5, "KL":0, "hidden":1
-                #dominant_loss_dic = {"pdiff-CF-disector": [0,2]}    #{"pdiff-CF-mean": [0,2]},  "pdiff-CF-disector": [0,2]
-                dominant_loss_dic = {None: None}
-                angle_arr = [90] #[90, 60, 45, 30]
+                #dominant_loss_dic = {"pdiff": 0, "hidden":1, "CF":2, "mask":3, "conn":4}
+                #dominant_loss_dic = {"hidden-conn-disector":[1,4]}
+                dominant_loss_dic = {"pdiff-CF-disector": [0,2]}    #{"pdiff-CF-mean": [0,2]},  "pdiff-CF-disector": [0,2]
+                #dominant_loss_dic = {None: None}
+                angle_arr = [45] #[90, 60, 45, 30]
                 for dominant_loss in dominant_loss_dic.items():
                         for angle in angle_arr:
                             if "hidden" in loss_type:
