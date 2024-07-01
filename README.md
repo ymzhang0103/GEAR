@@ -24,8 +24,16 @@ python   3.9
 torch >= 1.12.1+cu113
 
 ## To run
-Run codes/train_GNNNets.py to train the GNN model. Change parameter **dataset** per demand.
-
-Run NC-Explain_MO.py to train and test the explainer in the node classification task. Change **dataset** per demand.
-
-Run GC-Explain_MO.py to train and test the explainer in the graph classification. task Change **dataset** per demand.
+- Train GNN Model
+	- Run codes/train_GNNNets.py to train the GNN model. Change parameter **dataset** per demand.
+- Train GEAR Model
+	- Run NC-Explain_MO.py to train and test the explainer in the node classification task. Change **dataset** per demand.
+	- Run GC-Explain_MO.py to train and test the explainer in the graph classification. task Change **dataset** per demand.
+- Integrate GEAR into existing GNN frameworks
+  	- Initializing MO optimizer
+  	  	- optimizer = Adam(explainer.elayers.parameters(), lr=args.elr)  #Line 71 in NC-Explain_MO.py
+		- optimizer = MOGrad(optimizer)  #Line 72 in NC-Explain_MO.py
+  	- Packaging losses list
+  	  	- losses = [pred_loss, hidden_loss, cf_loss, lap_loss, con_loss]  #Line 183 in NC-Explain_MO.py
+  	- Adjusting Gradients
+  	  	- optimizer.backward_adjust_grad_dominant(losses, dominant_index, sim_obj)  #Line 200 in NC-Explain_MO.py
