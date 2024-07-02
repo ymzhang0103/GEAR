@@ -3,7 +3,7 @@ Code for the paper "GEAR: Learning Graph Neural Network Explainer via Adjusting 
 
 ## Overview
 The project contains the following folders and files.
-- datasets: the datasets except for the Graph-Twitter dataset are contained in this fold. The Graph-Twitter dataset is stored on a cloud drive.URL: https://pan.baidu.com/s/1vtzVGU2WVD5YdFs1REkG_w?pwd=usis. Access code: usis
+- datasets: the datasets except for the Graph-Twitter dataset are contained in this fold. The Graph-Twitter dataset is stored on a cloud drive.URL: https://pan.baidu.com/s/1ROpWV4TMq_MeWFotj6_dFg?pwd=regw. Access code: regw
 - codes
 	- load_dataset.py: Load datasets.
   	- train_GNNNets.py: Train GNN models to be explained.
