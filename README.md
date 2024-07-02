@@ -20,8 +20,9 @@ The project contains the following folders and files.
 - GNN_checkpoint: To facilitate the reproduction of the experimental results in the paper, we provide the trained GNNs to be explainer in this fold.
 
 ## Prerequisites
-python   3.9
-torch >= 1.12.1+cu113
+- python >= 3.9
+- torch >= 1.12.1+cu113
+- torch-geometric >= 2.2.0
 
 ## To run
 - Train GNN Model
