@@ -33,9 +33,9 @@ The project contains the following folders and files.
 	- Run GC-Explain_MO.py to train and test the explainer in the graph classification task. Change **parameters** per demand.
 - Integrate GEAR into existing GNN frameworks
   	- Initializing MO optimizer
-  	  	- optimizer = Adam(explainer.elayers.parameters(), lr=args.elr)  #Line 71 in NC-Explain_MO.py
-		- optimizer = MOGrad(optimizer)  #Line 72 in NC-Explain_MO.py
+  	  	- optimizer = Adam(explainer.elayers.parameters(), lr=args.elr)
+		- optimizer = MOGrad(optimizer)  #Line 70 in NC-Explain_MO.py
   	- Packaging losses list
-  	  	- losses = [pred_loss, hidden_loss, cf_loss, lap_loss, con_loss]  #Line 183 in NC-Explain_MO.py
+  	  	- losses = [pred_loss, hidden_loss, cf_loss, lap_loss, con_loss]  #Line 173 in NC-Explain_MO.py
   	- Adjusting Gradients
-  	  	- optimizer.backward_adjust_grad_dominant(losses, dominant_index, sim_obj)  #Line 200 in NC-Explain_MO.py
+  	  	- optimizer.backward_adjust_grad_dominant(losses, dominant_index, sim_obj)  #Line 190 in NC-Explain_MO.py
