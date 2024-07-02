@@ -3,9 +3,14 @@ from scipy.sparse import coo_matrix
 import torch
 
 class Extractor(object):
-    def __init__(self, adj, edge_index, features, edge_label_matrix, embeds, labels, hops, **kwargs):
+    #def __init__(self, adj, edge_index, features, edge_label_matrix, embeds, labels, hops, **kwargs):
+    def __init__(self, adj, edge_label_matrix, hops, **kwargs):
         super(Extractor,self).__init__(**kwargs)
-        if isinstance(edge_index, torch.Tensor):
+        self.adj = adj
+        self.edge_label_matrix = edge_label_matrix
+        #self.ext_adj = self.extend(adj, hops-1)
+        self.ext_adj = self.extend(adj, 1)
+        '''if isinstance(edge_index, torch.Tensor):
             self.edge_index = edge_index.cpu().numpy()
         else:
             self.edge_index = edge_index
@@ -13,7 +18,6 @@ class Extractor(object):
         self.embeds = embeds
         self.labels = labels
         self.hops = hops
-        self.ext_adj = self.extend(adj, hops-1)
         self.edge_label_matrix = edge_label_matrix
         if isinstance(adj, np.ndarray):
             adj_coo = coo_matrix(adj)
@@ -26,16 +30,22 @@ class Extractor(object):
         for r,c in list(zip(adj_coo.row, adj_coo.col)):
             adj_list[r].add(c)
             adj_list[c].add(r)
-        self.adj_list= adj_list
+        self.adj_list= adj_list'''
 
     def extend(self, adj, hops):
-        ext_adj = adj.copy()
+        ext_adj = adj.clone()
         for hop in range(hops):
             ext_adj = ext_adj @ adj + adj
         return ext_adj
 
     def subgraph(self, node):
-        begin_index = self.ext_adj.indptr[node]
+        sub_nodes = torch.nonzero(self.ext_adj[node]).T[0]
+        sub_adj = self.adj[sub_nodes][:, sub_nodes]
+        if self.edge_label_matrix is not None:
+            sub_edge_label = self.edge_label_matrix[sub_nodes][:, sub_nodes]
+        else:
+            sub_edge_label = None
+        '''begin_index = self.ext_adj.indptr[node]
         end_index = self.ext_adj.indptr[node+1]
         subnodes_set = set(self.ext_adj.indices[begin_index:end_index])
         subnodes_set.add(node)
@@ -45,8 +55,10 @@ class Extractor(object):
         for n in subnodes_set:
             if n not in remap:
                 remap[n]=len(remap)
-                sub_nodes.append(n)
-        row = []
+                sub_nodes.append(n)'''
+        return sub_nodes, sub_adj, sub_edge_label
+    
+        '''row = []
         col = []
         data = []
         edge_label = []
@@ -72,7 +84,7 @@ class Extractor(object):
         sub_labels = self.labels[sub_nodes]
         sub_embeds = self.embeds[sub_nodes]
 
-        return sub_adj, sub_features, sub_embeds, sub_labels, sub_edge_label_matrix, sub_nodes, sub_edge_idx
+        return sub_adj, sub_features, sub_embeds, sub_labels, sub_edge_label_matrix, sub_nodes, sub_edge_idx'''
 
 
 

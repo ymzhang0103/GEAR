@@ -9,6 +9,83 @@ from torch.optim import Adam
 from GNNmodelsHidden import GnnNets, GnnNets_NC
 from load_dataset import get_dataset, get_dataloader
 from Configures import data_args, train_args, model_args
+#from dgl.data import PubmedGraphDataset
+from torch_geometric.data import Data
+import random
+import math
+
+def train_MUTAG():
+    # attention the multi-task here
+    print('start loading data====================')
+    dataset = get_dataset(data_args)
+    input_dim = dataset.num_node_features
+    output_dim = int(dataset.num_classes)
+    dataloader = get_dataloader(dataset, data_args, train_args)
+
+    print('start training model==================')
+    gnnNets = GnnNets(input_dim, output_dim, model_args)
+    gnnNets.to_device()
+    criterion = nn.CrossEntropyLoss()
+    optimizer = Adam(gnnNets.parameters(), lr=train_args.learning_rate, weight_decay=train_args.weight_decay)
+
+    best_acc = 0.0
+    best_loss = -100.0
+    data_size = len(dataset)
+    print(f'The total num of dataset is {data_size}')
+
+    # save path for model
+    if not os.path.isdir('checkpoint'):
+        os.mkdir('checkpoint')
+    if not os.path.isdir(os.path.join('checkpoint', data_args.dataset_name)):
+        os.mkdir(os.path.join('checkpoint', f"{data_args.dataset_name}"))
+    ckpt_dir = f"./checkpoint/{data_args.dataset_name}/"
+
+    early_stop_count = 0
+    for epoch in range(train_args.max_epochs):
+        acc = []
+        loss_list = []
+        gnnNets.train()
+        for batch in dataloader['train']:
+            logits, probs, _ = gnnNets(batch)
+            loss = criterion(logits, batch.y)
+
+            # optimization
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_value_(gnnNets.parameters(), clip_value=2.0)
+            optimizer.step()
+
+            ## record
+            _, prediction = torch.max(logits, -1)
+            loss_list.append(loss.item())
+            acc.append(prediction.eq(batch.y).cpu().numpy())
+
+        # report train msg
+        epoch_acc = np.concatenate(acc, axis=0).mean()
+        epoch_loss = np.average(loss_list)
+        print(f"Train Epoch:{epoch}  |Loss: {epoch_loss:.3f} | Acc: {epoch_acc:.3f}")
+
+        # only save the best model
+        is_best = (epoch_acc > best_acc) or (epoch_loss < best_loss and epoch_acc >= best_acc)
+        if epoch_acc == best_acc:
+            early_stop_count += 1
+        if early_stop_count > train_args.early_stopping:
+            break
+        if is_best:
+            if epoch_acc > best_acc:
+                best_acc = epoch_acc
+                early_stop_count = 0
+            if epoch_loss < best_loss:
+                best_loss = epoch_loss
+        if is_best or epoch % train_args.save_epoch == 0:
+            save_best(ckpt_dir, epoch, gnnNets, model_args.model_name, epoch_acc, is_best)
+
+    print(f"The best validation accuracy is {best_acc}.")
+    # report test msg
+    checkpoint = torch.load(os.path.join(ckpt_dir, f'{model_args.model_name}_best.pth'))
+    gnnNets.update_state_dict(checkpoint['net'])
+    test_state, _, _ = test_GC(dataloader['train'], gnnNets, criterion)
+    print(f"Test: | Loss: {test_state['loss']:.3f} | Acc: {test_state['acc']:.3f}")
 
 
 # train for graph classification
@@ -19,7 +96,7 @@ def train_GC():
     input_dim = dataset.num_node_features
     output_dim = int(dataset.num_classes)
     dataloader = get_dataloader(dataset, data_args, train_args)
-    
+
     print('start training model==================')
     gnnNets = GnnNets(input_dim, output_dim, model_args)
     gnnNets.to_device()
@@ -40,10 +117,10 @@ def train_GC():
     print(f'The total num of dataset is {data_size}')
 
     # save path for model
-    '''if not os.path.isdir('checkpoint'):
+    if not os.path.isdir('checkpoint'):
         os.mkdir('checkpoint')
     if not os.path.isdir(os.path.join('checkpoint', data_args.dataset_name)):
-        os.mkdir(os.path.join('checkpoint', f"{data_args.dataset_name}"))'''
+        os.mkdir(os.path.join('checkpoint', f"{data_args.dataset_name}"))
     ckpt_dir = f"./checkpoint/{data_args.dataset_name}/"
     if not os.path.isdir(ckpt_dir):
         os.mkdir(ckpt_dir)
@@ -54,7 +131,7 @@ def train_GC():
         loss_list = []
         gnnNets.train()
         for batch in dataloader['train']:
-            logits, probs, emb, graph_emb, h_all = gnnNets(batch)
+            logits, probs, _ = gnnNets(batch)
             loss = criterion(logits, batch.y)
 
             # optimization
@@ -108,7 +185,7 @@ def evaluate_GC(eval_dataloader, gnnNets, criterion):
     gnnNets.eval()
     with torch.no_grad():
         for batch in eval_dataloader:
-            logits, probs, emb, graph_emb, h_all = gnnNets(batch)
+            logits, probs, _ = gnnNets(batch)
             loss = criterion(logits, batch.y)
 
             ## record
@@ -130,7 +207,7 @@ def test_GC(test_dataloader, gnnNets, criterion):
     gnnNets.eval()
     with torch.no_grad():
         for batch in test_dataloader:
-            logits, probs, emb, graph_emb, h_all = gnnNets(batch)
+            logits, probs, _ = gnnNets(batch)
             loss = criterion(logits, batch.y)
 
             # record
@@ -170,6 +247,7 @@ def predict_GC(test_dataloader, gnnNets):
     return pred_probs, predictions
 
 
+
 # train for node classification task
 def train_NC():
     print('start loading data====================')
@@ -181,11 +259,34 @@ def train_NC():
     # save path for model
     if not os.path.isdir('checkpoint'):
         os.mkdir('checkpoint')
-    if not os.path.isdir(os.path.join('checkpoint', f"{data_args.dataset_name}")):
-        os.mkdir(os.path.join('checkpoint', f"{data_args.dataset_name}"))
-    ckpt_dir = f"./checkpoint/{data_args.dataset_name}/"
+    #ckpt_dir = f"GNN_checkpoint/{data_args.dataset_name}/"
+    ckpt_dir = os.path.join('GNN_checkpoint', f"{data_args.dataset_name}")
+    if not os.path.isdir(ckpt_dir):
+        os.mkdir(ckpt_dir)
+    #if not os.path.isdir(os.path.join('checkpoint', f"{data_args.dataset_name}")):
+    #    os.mkdir(os.path.join('checkpoint', f"{data_args.dataset_name}"))
 
     data = dataset[0]
+    if data_args.dataset_name == "Computers":
+        num_nodes = data.num_nodes
+        train_mask = torch.tensor([False] * num_nodes)
+        val_mask = torch.tensor([False] * num_nodes)
+        test_mask = torch.tensor([False] * num_nodes)
+        node_index = list(range(num_nodes))
+        random.seed(2023)
+        random.shuffle(node_index)
+        print(node_index)
+        train_mask[node_index[ : math.floor(num_nodes*0.8)]] =True
+        val_mask[node_index[math.floor(num_nodes*0.8) : math.floor(num_nodes*0.9)]] = True
+        test_mask[node_index[math.floor(num_nodes*0.9) : ]] = True
+    else:
+        train_mask =  data.train_mask
+        val_mask =  data.val_mask
+        test_mask =  data.test_mask
+    data['train_mask'] = train_mask
+    data['val_mask'] = val_mask
+    data['test_mask'] = test_mask
+    data = data.to(model_args.device)
     gnnNets_NC = GnnNets_NC(input_dim, output_dim, model_args)
     criterion = nn.CrossEntropyLoss()
     optimizer = Adam(gnnNets_NC.parameters(), lr=train_args.learning_rate, weight_decay=train_args.weight_decay)
@@ -197,8 +298,8 @@ def train_NC():
     for epoch in range(1, train_args.max_epochs + 1):
         gnnNets_NC.to(model_args.device)
         gnnNets_NC.train()
-        logits, prob, _ = gnnNets_NC(data)
-        loss = criterion(logits[data.train_mask], data.y[data.train_mask])
+        logits, prob, _, _ = gnnNets_NC(data)
+        loss = criterion(logits[train_mask], data.y[train_mask])
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -268,7 +369,8 @@ def test_NC():
     output_dim = int(dataset.num_classes)
 
     # save path for model
-    ckpt_dir = f"./checkpoint/{data_args.dataset_name}/"
+    #ckpt_dir = f"./GNN_checkpoint/{data_args.dataset_name}/"
+    ckpt_dir = os.path.join('GNN_checkpoint', f"{data_args.dataset_name}_0")
 
     data = dataset[0]
     gnnNets_NC = GnnNets_NC(input_dim, output_dim, model_args)
@@ -279,6 +381,27 @@ def test_NC():
     #gnnNets_NC.update_state_dict(checkpoint['net'])
     gnnNets_NC.load_state_dict(checkpoint['net'])
     gnnNets_NC.to(model_args.device)
+
+    if data_args.dataset_name == "PubMed" or data_args.dataset_name == "citeseer" or data_args.dataset_name == "cora":
+        num_nodes = data.num_nodes
+        train_mask = torch.tensor([False] * num_nodes)
+        val_mask = torch.tensor([False] * num_nodes)
+        test_mask = torch.tensor([False] * num_nodes)
+        node_index = list(range(num_nodes))
+        random.seed(2023)
+        random.shuffle(node_index)
+        print(node_index)
+        train_mask[node_index[ : math.floor(num_nodes*0.8)]] =True
+        val_mask[node_index[math.floor(num_nodes*0.8) : math.floor(num_nodes*0.9)]] = True
+        test_mask[node_index[math.floor(num_nodes*0.9) : ]] = True
+    else:
+        train_mask =  data.train_mask
+        val_mask =  data.val_mask
+        test_mask =  data.test_mask
+    data['train_mask'] = train_mask
+    data['val_mask'] = val_mask
+    data['test_mask'] = test_mask
+    data.to(model_args.device)
     eval_info = evaluate_NC(data, gnnNets_NC, criterion)
     print(f'Test Loss: {eval_info["test_loss"]:.4f}, Test Accuracy: {eval_info["test_acc"]:.3f}')
 
@@ -302,6 +425,9 @@ def save_best(ckpt_dir, epoch, gnnNets, model_name, eval_acc, is_best):
 
 
 if __name__ == '__main__':
+    import sys
+    #globals()[sys.argv[1]]()
     #train_GC()
     train_NC()
     #test_NC()
+    #train_PubMed_GNN()

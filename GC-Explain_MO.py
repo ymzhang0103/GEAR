@@ -3,7 +3,7 @@
 
 # In[ ]:
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 import sys
 sys.path.append('./codes/forgraph/')
@@ -500,8 +500,8 @@ def main(iteration_num, optimal_method, loss_type, hidden_layer, dominant_loss, 
     args.seed = 2023
     
 
-    args.dataset_root = "../datasets"
-    args.dataset = "Graph_Twitter"   #Graph_Twitter, Graph_SST5, Mutagenicity_full, MUTAG, NCI1
+    args.dataset_root = "datasets"
+    args.dataset = "Mutagenicity"   #Graph_Twitter, Mutagenicity, NCI1
     save_map = "MO_LISA_TEST_LOGS_NEW/"+args.dataset.upper() +"_loss"
     save_map = save_map + "_" + loss_type
     if hidden_layer:
@@ -524,8 +524,6 @@ def main(iteration_num, optimal_method, loss_type, hidden_layer, dominant_loss, 
     print("save_map: ", save_map)
     if not os.path.exists(save_map):
         os.makedirs(save_map)
-    
-    #GNNmodel_ckpt_path = osp.join('checkpoint', args.dataset, 'gcn_best.pth') 
 
     args.topk_arr = list(range(10))+list(range(10,101,5))
     args.loss_flag = loss_type
@@ -617,13 +615,6 @@ def main(iteration_num, optimal_method, loss_type, hidden_layer, dominant_loss, 
         model = load_gnnNets_GC(GNNmodel_ckpt_path, input_dim=dataset.num_node_features, output_dim=dataset.num_classes, device = args.device)
         model.eval()
 
-        '''
-        with torch.no_grad():
-            embs = model.getNodeEmb((torch.tensor(features).type(torch.float32), torch.tensor(adjs).type(torch.float32)), training=False)
-
-            output = model((torch.tensor(features).type(torch.float32), torch.tensor(adjs).type(torch.float32)), training=False)
-        pred_label = torch.argmax(output, 1)
-        '''
         #CELL2
         explainer = ExplainerGCMO(model=model, args=args)
         explainer.to(args.device)
@@ -1012,14 +1003,13 @@ def graph_mask(explainer, model, features, edge_index, edge_mask):
     return mask_pred.squeeze(0), graph_emb.squeeze(0)
 
 def test_explainmodel():
-    args.dataset_root = "/home/liuli/zhangym/torch_projects/datasets"
-    args.dataset = "MUTAG"
+    args.dataset_root = "datasets"
+    args.dataset = "Mutagenicity"
     #args.dataset="Graph-Twitter"
-    #args.dataset="Graph-SST5"x
-    save_map = "MO_LISA_TEST_LOGS/MUTAG_loss_pdiff_hidden_CF_LM_hidden_alllayer_iter1_elr001_epoch100_MO-GradVac_angle45_dominant_pdiff-cf_normalized-5randmask/0/"
+    save_map = "MO_LISA_TEST_LOGS/Mutagenicity_loss_pdiff_hidden_CF_LM_hidden_alllayer_iter1_elr001_epoch100_MO-GEAR_angle45_dominant_pdiff-CF-disector_fiveGCN_seed2023/0/"
     explainModel_ckpt_path = save_map + args.dataset+"_BEST.pt"
     
-    top_k = 20
+    top_k = 10
     GNNmodel_ckpt_path = osp.join('model_weights', args.dataset, 'gcn_best.pth') 
 
     dataset = get_dataset(args.dataset_root, args.dataset)
@@ -1142,24 +1132,22 @@ def test_explainmodel():
 
 
 if __name__ == "__main__":
-    iteration = 1
+    iteration = 5
     optimal_method_arr = ["MO-GEAR"]  #weightsum, MO-PCGrad, MO-GEAR, MO-CAGrad
     loss_type_arr = ["pdiff_hidden_CF_LM_conn"]    #"ce", "ce_hidden", "kl", "kl_hidden", "pl_value", "pl_value_hidden"
     for optimal_method in optimal_method_arr:
         for loss_type in loss_type_arr: 
             if optimal_method == "weightsum":
-                coff_arr =[5.0, 10.0]     #[5.0, 10.0, 50.0, 100.0]
+                coff_arr =[1.0, 5.0, 10.0, 50.0, 100.0]
                 for coff in coff_arr:
                     main(iteration, optimal_method, loss_type, "alllayer", (None,None), None, coff)
             elif  optimal_method == "getGrad":
                 main(iteration, optimal_method, loss_type, "alllayer", ("pdiff-CF-mean",[0,2]), None, None)
             elif "MO" in optimal_method:
-                #dominant_loss_dic = {"pdiff-LM-mean": [0,3], "hidden-LM-mean":[1,3]}     #{"KL":0, "hidden":1}  # "PL":0, "value":1, "hidden":2 , "mask":3, "con":4, "CF":5, "KL":0, "hidden":1
                 #dominant_loss_dic = {"pdiff": 0, "hidden":1, "CF":2, "mask":3, "conn":4}
-                #dominant_loss_dic = {"hidden-conn-disector":[1,4]}
                 dominant_loss_dic = {"pdiff-CF-disector": [0,2]}    #{"pdiff-CF-mean": [0,2]},  "pdiff-CF-disector": [0,2]
                 #dominant_loss_dic = {None: None}
-                angle_arr = [45] #[90, 60, 45, 30]
+                angle_arr = [45] #[90, 75, 60, 45, 30, 15]
                 for dominant_loss in dominant_loss_dic.items():
                         for angle in angle_arr:
                             if "hidden" in loss_type:

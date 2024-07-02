@@ -16,19 +16,8 @@ from torch.utils.data import random_split, Subset
 import traceback
 import scipy.sparse as sp
 from torch_geometric.data.dataset import Dataset
+from torch_geometric.datasets import Planetoid, Actor, Amazon
 
-#from fornode.config import args
-#from fornode.utils import *
-#import tensorflow as tf
-#import time
-#from GNNmodels import GCN
-#from fornode.metrics import *
-#import pickle as pkl
-#from matplotlib import pyplot as plt
-#import networkx as nx
-#import numpy as np
-
-#(adjs, feas, labels) = load_real_dataset('REDDIT-BINARY')
 
 def undirected_graph(data):
     data.edge_index = torch.cat([torch.stack([data.edge_index[1], data.edge_index[0]], dim=0),
@@ -133,18 +122,16 @@ def get_dataset(data_args):
         return load_MUTAG(data_args)
     elif data_args.dataset_name.lower() == 'Mutagenicity'.lower():
         return load_MutagenicityDataset(data_args)
-    elif data_args.dataset_name.lower() == 'Mutagenicity_full'.lower():
-        return load_MutagenicityDatasetFull(data_args)
     elif data_args.dataset_name.lower() == 'NCI1'.lower():
         return load_NCI1Dataset(data_args)
-    elif data_args.dataset_name.lower() == 'citeseer'.lower():
-        return load_CitationDataset(data_args)
     elif data_args.dataset_name.lower() in sync_dataset_dict.keys():
         return load_syn_data(data_args)
     elif data_args.dataset_name.lower() in molecule_net_dataset_names:
         return load_MolecueNet(data_args)
     elif data_args.dataset_name.lower() in sentigraph_names:
         return load_SeniGraph(data_args)
+    elif data_args.dataset_name.lower() == "computers":
+        return Amazon(root=data_args.dataset_dir, name = data_args.dataset_name)
     else:
         raise NotImplementedError
 
@@ -221,120 +208,6 @@ class MutagenicityDataset(InMemoryDataset):
         self.root = root
         self.name = name
         super(MutagenicityDataset, self).__init__(root, transform, pre_transform)
-        self.data, self.slices = torch.load(self.processed_paths[0])
-
-    def __len__(self):
-        return len(self.slices['x']) - 1
-
-    @property
-    def raw_dir(self):
-        return os.path.join(self.root, self.name, 'raw')
-
-    @property
-    def raw_file_names(self):
-        return [self.name+'_A', self.name+'_edge_gt.txt', self.name+'_graph_labels', self.name+'_graph_indicator', self.name+'_node_labels']
-
-    @property
-    def processed_dir(self):
-        return os.path.join(self.root, self.name, 'processed')
-
-    @property
-    def processed_file_names(self):
-        return ['data.pt']
-    
-
-    def process(self):
-        r"""Processes the dataset to the :obj:`self.processed_dir` folder."""
-        node_labels = np.loadtxt(os.path.join(self.raw_dir, self.name+'_node_labels.txt'),delimiter=',').astype(np.int32)
-        edges = np.loadtxt(os.path.join(self.raw_dir, self.name+'_A.txt'),delimiter=',').astype(np.int32)
-        edge_labels= np.loadtxt(os.path.join(self.raw_dir, self.name+'_edge_labels.txt'),delimiter=',').astype(np.int32)
-        edge_labels_gt = np.loadtxt(os.path.join(self.raw_dir, self.name+'_edge_gt.txt'),delimiter=',').astype(np.int32)
-
-        graph_indicator = np.loadtxt(os.path.join(self.raw_dir, self.name+'_graph_indicator.txt'), delimiter=',').astype(np.int32)
-        graph_labels = np.loadtxt(os.path.join(self.raw_dir, self.name+'_graph_labels.txt'), delimiter=',').astype(np.int32)
-
-        graph_id = 1
-        starts = [1]
-        node2graph = {}   #key=node, value= graphid
-        for i in range(len(graph_indicator)):
-            if graph_indicator[i]!=graph_id:
-                graph_id = graph_indicator[i]
-                starts.append(i+1)
-            node2graph[i+1]=len(starts)-1
-
-        graphid  = 0
-        edge_lists = []
-        edge_label_lists = []
-        edge_list = []
-        edge_label_list = []
-        edge_label_gt_lists = []
-        edge_label_gt_list = []
-        for (s,t), l, gt in list(zip(edges,edge_labels, edge_labels_gt)):
-            sgid = node2graph[s]
-            tgid = node2graph[t]
-            if sgid!=tgid:
-                print('edges connecting different graphs, error here, please check.')
-                print(s,t,'graph id',sgid,tgid)
-                exit(1)
-            gid = sgid
-            if gid !=  graphid:
-                edge_lists.append(edge_list)
-                edge_label_lists.append(edge_label_list)
-                edge_label_gt_lists.append(edge_label_gt_list)
-                edge_list = []
-                edge_label_list = []
-                edge_label_gt_list = []
-                graphid = gid
-            start = starts[gid]
-            edge_list.append((s-start,t-start))
-            edge_label_list.append(l)
-            edge_label_gt_list.append(gt)
-
-        edge_lists.append(edge_list)
-        edge_label_lists.append(edge_label_list)
-        edge_label_gt_lists.append(edge_label_gt_list)
-
-        # node labels
-        node_label_lists = []
-        graphid = 0
-        node_label_list = []
-        for i in range(len(node_labels)):
-            nid = i+1
-            gid = node2graph[nid]
-            # start = starts[gid]
-            if gid!=graphid:
-                node_label_lists.append(node_label_list)
-                graphid = gid
-                node_label_list = []
-            node_label_list.append(node_labels[i])
-        node_label_lists.append(node_label_list)
-
-        data_list = []
-        for gid in range(len(graph_labels)):
-            if (graph_labels[gid] == 0 and np.sum(edge_label_gt_lists[gid]) > 0) or (graph_labels[gid] == 1 and np.sum(edge_label_gt_lists[gid]) <= 0):
-            #if 1==1:
-                label = int(graph_labels[gid]==1)
-                idx = np.where(graph_indicator == gid+1)
-                graph_len = len(idx[0])
-                #feature = node_label_lists[gid]
-                feature = node_labels[idx[0][0]:idx[0][0] + graph_len]
-                if len(feature) != max(np.array(edge_lists[gid]).reshape(1,-1)[0])+1:
-                    print(gid, len(feature), max(np.array(edge_lists[gid]).reshape(1,-1)[0]))
-                nb_clss = max(node_labels) + 1
-                targets = np.array(feature).reshape(-1)
-                one_hot_feature = np.eye(nb_clss)[targets]
-                data_example = Data(x=torch.from_numpy(one_hot_feature).float(),
-                                    edge_index=torch.tensor(edge_lists[gid], dtype=torch.long).T, y=torch.tensor(graph_labels[gid], dtype=torch.long), gid = gid, edge_label= torch.from_numpy(np.array(edge_label_lists[gid])), edge_label_gt= torch.from_numpy(np.array(edge_label_gt_lists[gid])))
-                data_list.append(data_example)
-
-        torch.save(self.collate(data_list), self.processed_paths[0])
-
-
-class MutagenicityDatasetFull(InMemoryDataset):
-    def __init__(self, root, name, transform=None, pre_transform=None):
-        self.root = root
-        self.name = name
-        super(MutagenicityDatasetFull, self).__init__(root, transform, pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[0])
 
     def __len__(self):
@@ -702,7 +575,7 @@ class BA2MotifDataset(InMemoryDataset):
             self.data, self.slices = self.collate(data_list)
 
         torch.save(self.collate(data_list), self.processed_paths[0])
-
+'''
 
 class BA_LRP(InMemoryDataset):
     r"""
@@ -830,7 +703,7 @@ class BA_LRP(InMemoryDataset):
 
         data, slices = self.collate(data_list)
         torch.save((data, slices), self.processed_paths[0])
-
+'''
 
 class CitationDataset(InMemoryDataset):
     def __init__(self, root, name, transform=None, pre_transform=None):
@@ -970,7 +843,7 @@ class CitationDataset(InMemoryDataset):
         features = sp.csr_matrix([])
         citation = []
         labels_onehot = []
-        if self.name == 'cora' or self.name == 'citeseer':
+        if self.name.lower() == 'cora' or self.name.lower() == 'citeseer':
             citation = self.read_file_citation(os.path.join(self.raw_dir, self.name + '.cites'))
             contents = self.read_file_citation(os.path.join(self.raw_dir, self.name + '.content'))
             features = sp.csr_matrix(contents[:, 1:-1], dtype=np.float32)
@@ -1032,13 +905,6 @@ def load_MutagenicityDataset(data_args):
     dataset.data.y = dataset.data.y.squeeze().long()
     return dataset
 
-def load_MutagenicityDatasetFull(data_args):
-    """ Mutagenicity Dataset select data of two types: 1, mutagenic effect(graphlabel = 0)  and have groundth(N02 or NH2) 2, no mutagenic effect (graphlabel = 1)  and no groundth(N02 or NH2) """
-    dataset = MutagenicityDatasetFull(root=data_args.dataset_dir, name=data_args.dataset_name)
-    dataset.data.x = dataset.data.x.float()
-    dataset.data.y = dataset.data.y.squeeze().long()
-    return dataset
-
 def load_NCI1Dataset(data_args):
     dataset = NCI1Dataset(root=data_args.dataset_dir, name=data_args.dataset_name)
     dataset.data.x = dataset.data.x.float()
@@ -1049,8 +915,6 @@ def load_syn_data(data_args):
     """ The synthetic dataset """
     if data_args.dataset_name.lower() == 'BA_2Motifs'.lower():
         dataset = BA2MotifDataset(root=data_args.dataset_dir, name=data_args.dataset_name)
-    elif data_args.dataset_name.lower() == "ba_lrp":
-        dataset = BA_LRP(root=data_args.dataset_dir)
     else:
         dataset = SynGraphDataset(root=data_args.dataset_dir, name=data_args.dataset_name)
     #dataset.node_type_dict = {k: v for k, v in enumerate(range(dataset.num_classes))}

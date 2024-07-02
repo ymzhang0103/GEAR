@@ -11,14 +11,14 @@ def get_params():
 
     # settings
     parser.add_argument("--dataset_root", type=str, default='datasets', help="Dataset root dir string")  
-    parser.add_argument("--dataset", type=str, default='None', help="Dataset string")# 'cora', 'citeseer', 'pubmed',   BA_community
+    parser.add_argument("--dataset", type=str, default='BA_shapes', help="Dataset string")# 'cora', 'citeseer', 'pubmed',   BA_community
     parser.add_argument('--early_stop', type=int, default= 2000, help='early_stop')
     parser.add_argument('--dtype', type=str, default='float32')  #
     parser.add_argument('--seed',type=int, default=1234, help='seed')
     parser.add_argument('--setting', type=int, default=1)  # 1 is used for GNNExplainer paper.
 
     parser.add_argument('--normadj', type=bool, default=False)  # GNNExplianer doesnot norm adj
-    parser.add_argument('--normfea', type=bool, default=False)  # GNNExplianer doesnot norm fea
+    parser.add_argument('--normfea', type=bool, default=False)  # GNNExplianer doesnot norm feat
 
     parser.add_argument('--motif', type=str, default='house')  #
 
@@ -28,7 +28,7 @@ def get_params():
 
     parser.add_argument('--epochs', type=int, default=1000, help='Number of epochs to train.')
     parser.add_argument('--dropout',type=float, default=0.0, help='dropout rate (1 - keep probability).')
-    parser.add_argument('--hiddens', type=str, default='20-20-20')
+    parser.add_argument('--hiddens', type=str, default='20-20-20')     #20-20-20
     parser.add_argument("--lr", type=float, default=0.003,help='initial learning rate.')
     parser.add_argument('--bn', type=bool, default=True)
     parser.add_argument('--concat', type=bool, default=False)  #defaul:True, modify model:concat=False

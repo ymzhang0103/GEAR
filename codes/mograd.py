@@ -10,64 +10,6 @@ from torch.nn.functional import cosine_similarity
 from scipy.optimize import minimize
 
 
-class Grad():
-    def __init__(self, optimizer):
-        self._optim = optimizer
-        return
-
-    @property
-    def optimizer(self):
-        return self._optim
-
-    def step(self):
-        '''
-        update the parameters with the gradient
-        '''
-        return self._optim.step()
-    
-    def zero_grad(self):
-        return self._optim.zero_grad(set_to_none=True)
-
-    def _retrieve_grad(self):
-        grad, shape = [], []
-        for group in self._optim.param_groups:
-            for p in group['params']:
-                # if p.grad is None: continue
-                # tackle the multi-head scenario
-                if p.grad is None:
-                    shape.append(p.shape)
-                    grad.append(torch.zeros_like(p).to(p.device))
-                    continue
-                shape.append(p.grad.shape)
-                grad.append(p.grad.clone())
-        return grad, shape
-
-    def _flatten_grad(self, grads, shapes):
-        flatten_grad = torch.cat([g.flatten() for g in grads])
-        return flatten_grad
-    
-    def _pack_grad(self, objectives):
-        grads, shapes = [], []
-        for obj in objectives:
-            self._optim.zero_grad(set_to_none=True)
-            obj.backward(retain_graph=True)
-            grad, shape = self._retrieve_grad()
-            grads.append(self._flatten_grad(grad, shape))
-            shapes.append(shape)
-        return grads, shapes
-
-    def get_grads(self, objectives):
-        grads, shapes = self._pack_grad(objectives)
-        coslist = []
-        for g_i_idx in range(len(grads)):
-            g_i = grads[g_i_idx]
-            for g_j_idx in range(g_i_idx+1, len(grads)):
-                g_j = grads[g_j_idx]
-                cosvalue = torch.nn.CosineSimilarity(dim=0)(g_i, g_j)
-                coslist.append(str(g_i_idx) + "-" + str(g_j_idx) + "-" + str(cosvalue.item()))
-        return coslist, grads, grads
-
-
 class MOGrad():
     def __init__(self, optimizer, reduction='mean'):
         self._optim, self._reduction = optimizer, reduction
@@ -402,19 +344,19 @@ class MOGrad():
         return merged_grad, dominant_index, modify_index_arr, coslist
 
 
-    def pc_backward_gradvac(self, objectives, sim_obj):
+    def backward_adjust_grad(self, objectives, sim_obj):
         '''
         calculate the gradient of the parameters
         input:
         - objectives: a list of objectives
         '''
         grads, shapes, has_grads = self._pack_grad(objectives)
-        pc_grad, modify_index_arr, coslist, cur_sim_obj, grads_new = self._project_conflicting_gradvac(grads, has_grads, sim_obj)
+        pc_grad, modify_index_arr, coslist, cur_sim_obj, grads_new = self._eliminate_conflicting(grads, has_grads, sim_obj)
         pc_grad = self._unflatten_grad(pc_grad, shapes[0])
         self._set_grad(pc_grad)
         return modify_index_arr, coslist, cur_sim_obj, grads, grads_new
 
-    def _project_conflicting_gradvac(self, grads, has_grads, sim_obj=0, beta=0.01, shapes=None):
+    def _eliminate_conflicting(self, grads, has_grads, sim_obj=0, beta=0.01, shapes=None):
         shared = torch.stack(has_grads).prod(0).bool()
         pc_grad, num_task = copy.deepcopy(grads), len(grads)
         modify_index_arr = []
@@ -462,28 +404,23 @@ class MOGrad():
         return merged_grad, modify_index_arr, coslist, sim_obj, pc_grad
 
 
-    def pc_backward_gradvac_dominant(self, objectives, dominant_idx, sim_obj):
+    def backward_adjust_grad_dominant(self, objectives, dominant_idx, sim_obj):
         grads, shapes, has_grads = self._pack_grad(objectives)
-        pc_grad, modify_index_arr, coslist, cur_sim_obj, grads_new = self._project_conflicting_gradvac_dominant(grads, has_grads, dominant_idx, sim_obj)
+        pc_grad, modify_index_arr, coslist, cur_sim_obj, grads_new = self._eliminate_conflicting_dominant(grads, has_grads, dominant_idx, sim_obj)
         pc_grad = self._unflatten_grad(pc_grad, shapes[0])
         self._set_grad(pc_grad)
         return modify_index_arr, coslist, cur_sim_obj, grads, grads_new
 
 
-    def _project_conflicting_gradvac_dominant(self, grads, has_grads, dominant_idx, sim_obj=0, beta=0.01, shapes=None):
+    def _eliminate_conflicting_dominant(self, grads, has_grads, dominant_idx, sim_obj=0, beta=0.01, shapes=None):
         shared = torch.stack(has_grads).prod(0).bool()
-        #dominant_grad, dominant_index = self.select_dominant_grad(grads)
         eps = 1e-10
         ori_grad = copy.deepcopy(grads)
         dominant_grad = torch.zeros(len(ori_grad[0])).to(ori_grad[0].device)
         if isinstance(dominant_idx, list):
             #F-value of dominant_idx grads
-            '''for i in dominant_idx:
-                    dominant_grad = dominant_grad + 1/(ori_grad[i] + eps)
-            dominant_grad =  torch.true_divide(len(dominant_idx), (dominant_grad+ eps))'''
             domgrads_list = []
             for i in dominant_idx:
-                #domgrads_list.append(ori_grad[i])
                 domgrads_list.append(ori_grad[i]/torch.norm(ori_grad[i]))   #normalize
             dominant_grad =  torch.mean(torch.stack(domgrads_list),dim=0)
         elif dominant_idx == "mean":
@@ -604,59 +541,4 @@ class MOGrad():
                 grad.append(p.grad.clone())
                 has_grad.append(torch.ones_like(p).to(p.device))
         return grad, shape, has_grad
-
-
-
-class TestNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self._linear = nn.Linear(3, 4)
-
-    def forward(self, x):
-        return self._linear(x)
-
-
-class MultiHeadTestNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self._linear = nn.Linear(3, 2)
-        self._head1 = nn.Linear(2, 4)
-        self._head2 = nn.Linear(2, 4)
-
-    def forward(self, x):
-        feat = self._linear(x)
-        return self._head1(feat), self._head2(feat)
-
-
-if __name__ == '__main__':
-
-    # fully shared network test
-    torch.manual_seed(4)
-    x, y = torch.randn(2, 3), torch.randn(2, 4)
-    net = TestNet()
-    y_pred = net(x)
-    pc_adam = PCGrad(optim.Adam(net.parameters()))
-    pc_adam.zero_grad()
-    loss1_fn, loss2_fn = nn.L1Loss(), nn.MSELoss()
-    loss1, loss2 = loss1_fn(y_pred, y), loss2_fn(y_pred, y)
-
-    pc_adam.pc_backward([loss1, loss2])
-    for p in net.parameters():
-        print(p.grad)
-
-    print('-' * 80)
-    # seperated shared network test
-
-    torch.manual_seed(4)
-    x, y = torch.randn(2, 3), torch.randn(2, 4)
-    net = MultiHeadTestNet()
-    y_pred_1, y_pred_2 = net(x)
-    pc_adam = PCGrad(optim.Adam(net.parameters()))
-    pc_adam.zero_grad()
-    loss1_fn, loss2_fn = nn.MSELoss(), nn.MSELoss()
-    loss1, loss2 = loss1_fn(y_pred_1, y), loss2_fn(y_pred_2, y)
-
-    pc_adam.pc_backward([loss1, loss2])
-    for p in net.parameters():
-        print(p.grad)
 

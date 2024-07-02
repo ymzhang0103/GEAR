@@ -110,6 +110,83 @@ def rho_ndcg(dists, new_dists, hitsn):
     ndcg = torch.divide(dcg, dcg_pf).item()
     return ndcg, r_mask, dists, new_dists
 
+
+
+def compute_pnps_NC_onenode(masked_adj, pred_label, model, sub_features, sub_adj, new_idx, fix_exp, mask_thresh):
+    #masked_adj = torch.tensor(masked_adj)
+    if fix_exp:
+        if len(masked_adj.flatten().sort(descending=True)[0])>fix_exp:
+            thresh = masked_adj.flatten().sort(descending=True)[0][fix_exp+1]
+        else:
+            thresh = masked_adj.flatten().sort(descending=True)[0][-1]
+    else:
+        thresh = mask_thresh
+
+    ps_adj = (masked_adj > thresh).float()
+    sub_edge_index = torch.nonzero(ps_adj.reshape(sub_features.shape[0], sub_features.shape[0])).T
+    data = Data(x=sub_features, edge_index=sub_edge_index)
+    _, ps_preds, _, _ = model(data.to(model.device))
+    ps_pre = ps_preds[new_idx][pred_label]
+    if ps_pre > 0.5:
+        ps = 1
+    else:
+        ps=0
+
+    pn_adj = sub_adj.to(ps_adj.device) - ps_adj.reshape(sub_features.shape[0], sub_features.shape[0])
+    sub_edge_index = torch.nonzero(pn_adj).T
+    data = Data(x=sub_features, edge_index=sub_edge_index)
+    _, pn_preds, _, _ = model(data.to(model.device))
+    pn_pre = pn_preds[new_idx][pred_label]
+    
+    if pn_pre < 0.5:
+        pn = 1
+    else:
+        pn=0
+
+    ave_size = torch.nonzero(ps_adj).shape[0]/2
+    return ps, pn, ave_size
+
+
+def compute_precision_recall_NC_onenode(masked_adj, e_labels, sub_edge_index, fix_exp, mask_thresh):
+    #masked_adj = torch.tensor(masked_adj)
+    if fix_exp:
+        if len(masked_adj.flatten().sort(descending=True)[0])> fix_exp:
+            thresh = masked_adj.flatten().sort(descending=True)[0][fix_exp+1]
+        else:
+            thresh = masked_adj.flatten().sort(descending=True)[0][-1]
+    else:
+        thresh = mask_thresh
+    new_edges = [masked_adj > thresh][0].cpu().numpy()
+    exp_list = new_edges.astype(int)
+    TP = 0
+    FP = 0
+    TN = 0
+    FN = 0
+    for i in range(len(e_labels)):
+        if exp_list[sub_edge_index[0][i], sub_edge_index[1][i]] == 1:
+            if e_labels[i] == 1:
+                TP += 1
+            else:
+                FP += 1
+        else:
+            if e_labels[i] == 1:
+                FN += 1
+            else:
+                TN += 1
+    if TP != 0:
+        pre = TP / (TP + FP)
+        rec = TP / (TP + FN)
+        acc = (TP + TN) / (TP + FP + TN + FN)
+        f1 = 2 * pre * rec / (pre + rec)
+    else:
+        pre = 0
+        rec = 0
+        f1 = 0
+        acc = (TP + TN) / (TP + FP + TN + FN)
+    return acc, pre, rec, f1
+
+
+
 def compute_pn_NC(exp_dict, pred_label_dict, args, model, feature_dict, adj_dict):
     pn_count = 0
     for nid, masked_adj in exp_dict.items():
@@ -229,6 +306,246 @@ def fidelity_complete(ori_probs, maskout_probs):
     drop_prob_complete = [ori_probs[i] - maskout_probs[i] for i in range(len(ori_probs))]
     result = np.mean([sum(abs(i)).item() for i in drop_prob_complete])
     return result
+
+def fidelity_complete_bak(origin_preds, mask_out_preds, label):
+    '''
+    preds_label = [torch.argmax(pred) for pred in origin_preds]
+    correct = sum([preds_label[i]==label[i] for i in range(len(label))]).true_divide(len(label))
+    mask_out_label = [torch.argmax(pred) for pred in mask_out_preds]
+    mask_out_correct = sum([mask_out_label[i]==label[i] for i in range(len(label))]).true_divide(len(label))
+    return correct.item()-mask_out_correct.item()
+    '''
+    fidelity_label = np.mean([(origin_preds[i][label[i]] - mask_out_preds[i][label[i]]).item() for i in range(len(origin_preds))])
+    fidelity_other = np.mean([sum(np.delete(mask_out_preds[i].tolist(), label[i].item()) - np.delete(origin_preds[i].tolist(), label[i].item())) for i in range(len(origin_preds))])
+    return fidelity_label + fidelity_other
+
+
+class XCollector_bak(object):
+    def __init__(self, sparsity=None):
+        self.__related_preds, self.__targets = {'zero': [], 'origin': [], 'masked': [], 'maskimp': [], 'retainimp':[], 'sparsity': [], 'masknotimp': [], 'delnotimp_sparsity': [], 'masknodes':[], 'sparsity_nodes':[], \
+       'origin_l': [], 'masked_l': [], 'maskimp_l': [], 'masknotimp_l': [], 'masknodes_l':[], 'origin_ol': [], 'masked_ol': [], 'maskimp_ol': [], 'masknotimp_ol': [], 'masknodes_ol':[], 'label': [], 'origin_label': []}, []
+        self.masks: Union[List, List[List[Tensor]]] = []
+
+        self.__sparsity = sparsity
+        self.__sparsity_delnotimp = sparsity
+        self.__fidelity, self.__fidelity_ol, self.__fidelity_complete, self.__fidelityminus_complete, self.__fidelity_delnotimp, self.__fidelity_ol_delnotimp, self.__fidelity_complete_delnotimp, self.__simula, self.__simula_ol, self.__simula_complete, self.__fidelity_nodes, self.__fidelity_origin_nodes, self.__fidelity_complete_nodes, self.__sparsity_nodes = None, None, None, None, None, None, None, None, None, None, None, None, None, None
+
+    @property
+    def targets(self) -> list:
+        return self.__targets
+
+    def new(self):
+        self.__related_preds, self.__targets = {'zero': [], 'origin': [], 'masked': [], 'maskimp': [], 'retainimp':[], 'sparsity': [], 'masknotimp': [], 'delnotimp_sparsity': [], 'masknodes':[], 'sparsity_nodes':[], \
+       'origin_l': [], 'masked_l': [], 'maskimp_l': [], 'masknotimp_l': [], 'masknodes_l':[], 'origin_ol': [], 'masked_ol': [], 'maskimp_ol': [], 'masknotimp_ol': [], 'masknodes_ol':[], 'label': [], 'origin_label': []}, []
+        self.masks: Union[List, List[List[Tensor]]] = []
+
+        self.__fidelity, self.__fidelity_ol, self.__fidelity_complete, self.__fidelityminus_complete, self.__sparsity, self.__fidelity_delnotimp, self.__fidelity_ol_delnotimp, self.__fidelity_complete_delnotimp, self.__sparsity_delnotimp, self.__simula, self.__simula_ol, self.__simula_complete, self.__fidelity_nodes, self.__fidelity_origin_nodes, self.__fidelity_complete_nodes, self.__sparsity_nodes = None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
+
+    def collect_data(self,
+                     masks: List[Tensor],
+                     related_preds: dir,
+                     label: int = 0) -> None:
+        r"""
+        The function is used to collect related data. After collection, we can call fidelity, fidelity_inv, sparsity
+        to calculate their values.
+
+        Args:
+            masks (list): It is a list of edge-level explanation for each class.
+            related_preds (list): It is a list of dictionary for each class where each dictionary
+            includes 4 type predicted probabilities and sparsity.
+            label (int): The ground truth label. (default: 0)
+        """
+        if not np.isnan(label):
+            for key, value in related_preds[label].items():
+                self.__related_preds[key].append(value)
+            for key in self.__related_preds.keys():
+                if key not in related_preds[0].keys():
+                    self.__related_preds[key].append(None)
+            self.__targets.append(label)
+            self.masks.append(masks)
+
+
+    @property
+    def fidelity(self):
+        if self.__fidelity:
+            return self.__fidelity
+        elif None in self.__related_preds['maskimp_l'] or None in self.__related_preds['origin_l']:
+            return None
+        else:
+            #use prop of correct label
+            maskout_preds, origin_preds = torch.tensor(self.__related_preds['maskimp_l']), torch.tensor(self.__related_preds['origin_l'])
+            self.__fidelity = fidelity(origin_preds, maskout_preds)
+            return self.__fidelity
+
+    @property
+    def fidelity_origin(self):
+        if self.__fidelity_ol:
+            return self.__fidelity_ol
+        elif None in self.__related_preds['maskimp_ol'] or None in self.__related_preds['origin_ol']:
+            return None
+        else:
+            # use prop of origin label
+            maskout_preds, origin_preds = torch.tensor(self.__related_preds['maskimp_ol']), torch.tensor(self.__related_preds['origin_ol'])
+            self.__fidelity_ol = fidelity(origin_preds, maskout_preds)
+            return self.__fidelity_ol
+
+    @property
+    def fidelity_complete(self):
+        if self.__fidelity_complete:
+            return self.__fidelity_complete
+        elif None in self.__related_preds['maskimp'] or None in self.__related_preds['origin']:
+            return None
+        else:
+            maskout_preds, origin_preds = self.__related_preds['maskimp'], self.__related_preds['origin']
+            self.__fidelity_complete = fidelity_complete(origin_preds, maskout_preds)
+            return self.__fidelity_complete
+
+    @property
+    def fidelityminus_complete(self):
+        if self.__fidelityminus_complete:
+            return self.__fidelityminus_complete
+        elif None in self.__related_preds['retainimp'] or None in self.__related_preds['origin']:
+            return None
+        else:
+            retain_preds, origin_preds = self.__related_preds['retainimp'], self.__related_preds['origin']
+            self.__fidelityminus_complete = fidelity_complete(origin_preds, retain_preds)
+            return self.__fidelityminus_complete
+
+    @property
+    def sparsity(self):
+        r"""
+        Return the Sparsity value.
+        """
+        if self.__sparsity:
+            return self.__sparsity
+        elif None in self.__related_preds['sparsity']:
+            return None
+        else:
+            return torch.tensor(self.__related_preds['sparsity']).mean().item()
+
+    @property
+    def fidelity_delnotimp(self):
+        if self.__fidelity_delnotimp:
+            return self.__fidelity_delnotimp
+        elif None in self.__related_preds['masknotimp_l'] or None in self.__related_preds['origin_l']:
+            return None
+        else:
+            #use prop of correct label
+            maskout_preds, origin_preds = torch.tensor(self.__related_preds['masknotimp_l']), torch.tensor(self.__related_preds['origin_l'])
+            self.__fidelity_delnotimp = fidelity(origin_preds, maskout_preds)
+            return self.__fidelity_delnotimp
+
+    @property
+    def fidelity_origin_delnotimp(self):
+        if self.__fidelity_ol_delnotimp:
+            return self.__fidelity_ol_delnotimp
+        elif None in self.__related_preds['masknotimp_ol'] or None in self.__related_preds['origin_ol']:
+            return None
+        else:
+            # use prop of origin label
+            maskout_preds, origin_preds = torch.tensor(self.__related_preds['masknotimp_ol']), torch.tensor(self.__related_preds['origin_ol'])
+            self.__fidelity_ol_delnotimp = fidelity(origin_preds, maskout_preds)
+            return self.__fidelity_ol_delnotimp
+
+    @property
+    def fidelity_complete_delnotimp(self):
+        if self.__fidelity_complete_delnotimp:
+            return self.__fidelity_complete_delnotimp
+        elif None in self.__related_preds['masknotimp'] or None in self.__related_preds['origin']:
+            return None
+        else:
+            maskout_preds, origin_preds = self.__related_preds['masknotimp'], self.__related_preds['origin']
+            self.__fidelity_complete_delnotimp = fidelity_complete(origin_preds, maskout_preds)
+            return self.__fidelity_complete_delnotimp
+
+    @property
+    def sparsity_delnotimp(self):
+        r"""
+        Return the Sparsity value.
+        """
+        if self.__sparsity_delnotimp:
+            return self.__sparsity_delnotimp
+        elif None in self.__related_preds['delnotimp_sparsity']:
+            return None
+        else:
+            return torch.tensor(self.__related_preds['delnotimp_sparsity']).mean().item()
+
+    @property
+    def simula(self):
+        if self.__simula:
+            return self.__simula
+        elif None in self.__related_preds['masked_l'] or None in self.__related_preds['origin_l']:
+            return None
+        else:
+            #use prop of correct label
+            masked_preds, origin_preds = torch.tensor(self.__related_preds['masked_l']), torch.tensor(self.__related_preds['origin_l'])
+            self.__simula = fidelity(origin_preds, masked_preds)
+            return self.__simula
+
+    @property
+    def simula_origin(self):
+        if self.__simula_ol:
+            return self.__simula_ol
+        elif None in self.__related_preds['masked_ol'] or None in self.__related_preds['origin_ol']:
+            return None
+        else:
+            # use prop of origin label
+            masked_preds, origin_preds = torch.tensor(self.__related_preds['masked_ol']), torch.tensor(self.__related_preds['origin_ol'])
+            self.__simula_ol = fidelity(origin_preds, masked_preds)
+            return self.__simula_ol
+
+    @property
+    def simula_complete(self):
+        if self.__simula_complete:
+            return self.__simula_complete
+        elif None in self.__related_preds['masked'] or None in self.__related_preds['origin']:
+            return None
+        else:
+            masked_preds, origin_preds= self.__related_preds['masked'], self.__related_preds['origin']
+            self.__simula_complete = fidelity_complete(origin_preds, masked_preds)
+            return self.__simula_complete
+
+    @property
+    def fidelity_nodes(self):
+        if self.__fidelity_nodes:
+            return self.__fidelity_nodes
+        elif None in self.__related_preds['masknodes_l'] or None in self.__related_preds['origin_l']:
+            return None
+        else:
+            mask_out_preds, origin_preds = torch.tensor(self.__related_preds['masknodes_l']), torch.tensor(self.__related_preds['origin_l'])
+            self.__fidelity_nodes = fidelity(origin_preds, mask_out_preds)
+            return self.__fidelity_nodes
+
+    @property
+    def fidelity_origin_nodes(self):
+        if self.__fidelity_origin_nodes:
+            return self.__fidelity_origin_nodes
+        elif None in self.__related_preds['masknodes_ol'] or None in self.__related_preds['origin_ol']:
+            return None
+        else:
+            mask_out_preds, origin_preds = torch.tensor(self.__related_preds['masknodes_ol']), torch.tensor(self.__related_preds['origin_ol'])
+            self.__fidelity_origin_nodes = fidelity(origin_preds, mask_out_preds)
+            return self.__fidelity_origin_nodes
+
+    @property
+    def fidelity_complete_nodes(self):
+        if self.__fidelity_complete_nodes:
+            return self.__fidelity_complete_nodes
+        elif None in self.__related_preds['masknodes'] or None in self.__related_preds['origin']:
+            return None
+        else:
+            mask_out_preds, origin_preds = self.__related_preds['masknodes'], self.__related_preds['origin']
+            self.__fidelity_complete_nodes = fidelity_complete(origin_preds, mask_out_preds)
+            return self.__fidelity_complete_nodes
+
+    @property
+    def sparsity_nodes(self):
+        if self.__sparsity_nodes:
+            return self.__sparsity_nodes
+        elif None in self.__related_preds['sparsity_nodes']:
+            return None
+        else:
+            return torch.tensor(self.__related_preds['sparsity_nodes']).mean().item()
 
 
 class XCollector(object):
@@ -872,10 +1189,8 @@ class MaskoutMetric:
         return pred_mask, related_preds_dict
 
 
-    def metric_pg_del_edges(self, nodeid, explainer, sub_adj, sub_feature, sub_embed, sub_label, origin_pred, sub_node, testing=True):
-        number_of_nodes = sub_feature.shape[0]
-        explainer.eval()
-        masked_pred, _, _, _ = explainer((sub_feature, sub_adj, nodeid, sub_embed, 1.0))
+    def metric_pg_del_edges(self, nodeid, masked_adj, masked_pred, data, sub_label, origin_pred, sub_node, testing=True, topk_arr = None):
+        number_of_nodes = data.x.shape[0]
 
         label = sub_label[nodeid].argmax(-1)
         origin_label = origin_pred.argmax(-1)
@@ -885,66 +1200,69 @@ class MaskoutMetric:
         edge_mask = torch.randn(len(masked_adj.data))   #随机mask
         print("PG edge_mask", edge_mask)'''
 
-        edge_mask = explainer.masked_adj[sub_adj.row, sub_adj.col].detach()
-        sub_edge_index = torch.tensor([sub_adj.row, sub_adj.col], dtype=torch.int64).to(self.prog_args.device)
-        x = sub_feature.to(self.prog_args.device)
+        #edge_mask = masked_adj[sub_adj.row, sub_adj.col].detach()
+        #sub_edge_index = torch.tensor([sub_adj.row, sub_adj.col], dtype=torch.int64).to(self.prog_args.device)
+        edge_mask = masked_adj[data.edge_index[0], data.edge_index[1]].detach()
         related_preds_dict = dict()
         if testing:
-            topk_arr = self.prog_args.topk_arr
+            if topk_arr is not None:
+                topk_arr = topk_arr
+            else:
+                topk_arr = self.prog_args.topk_arr
         else:
             topk_arr = [10]
         for top_k in topk_arr:
             #按比例mask重要边
-            select_k = round(top_k/100 * len(sub_edge_index[0]))
+            select_k = round(top_k/100 * len(data.edge_index[0]))
 
             selected_impedges_idx = edge_mask.reshape(-1).sort(descending=True).indices[:select_k]        #按比例选择top_k%的重要边
             other_notimpedges_idx = edge_mask.reshape(-1).sort(descending=True).indices[select_k:]        #除了重要的top_k%之外的其他边
-            sparsity_edges = 1- len(selected_impedges_idx) / sub_edge_index.shape[1]
+            sparsity_edges = 1- len(selected_impedges_idx) / data.edge_index.shape[1]
             
             #mask edges
-            maskimp_edge_mask = torch.ones(len(edge_mask), dtype=torch.float32).to(self.prog_args.device) 
+            maskimp_edge_mask = torch.ones(len(edge_mask), dtype=torch.float32)
             maskimp_edge_mask[selected_impedges_idx] = 1-edge_mask[selected_impedges_idx]      #重要的top_k%边置为1-mask
             self.__clear_masks__()
-            self.__set_masks__(x, sub_edge_index, maskimp_edge_mask)    
-            data = Data(x=x, edge_index=sub_edge_index)
+            self.__set_masks__(data.x, data.edge_index, maskimp_edge_mask.to(self.prog_args.device) )    
+            #data = Data(x=x, edge_index=sub_edge_index)
             self.model.eval()
             _, maskimp_preds, maskimp_embed, h_all= self.model(data)
             maskimp_pred = maskimp_preds[nodeid]
             self.__clear_masks__()
 
-            masknotimp_edge_mask  = torch.ones(len(edge_mask), dtype=torch.float32).to(self.prog_args.device) 
+            masknotimp_edge_mask  = torch.ones(len(edge_mask), dtype=torch.float32)
             masknotimp_edge_mask[other_notimpedges_idx] = edge_mask[other_notimpedges_idx]      #除了重要的top_k%之外的其他边置为mask
             self.__clear_masks__()
-            self.__set_masks__(x, sub_edge_index, masknotimp_edge_mask)    
-            data = Data(x=x, edge_index=sub_edge_index)
+            self.__set_masks__(data.x, data.edge_index, masknotimp_edge_mask.to(self.prog_args.device) )    
+            #data = Data(x=x, edge_index=sub_edge_index)
             self.model.eval()
             _, masknotimp_preds, masknotimp_embed, h_all = self.model(data)
             masknotimp_pred = masknotimp_preds[nodeid]
             self.__clear_masks__()
 
             #traditional fidelity (delete edges)
-            delimp_edge_mask = torch.ones(len(edge_mask), dtype=torch.float32).to(self.prog_args.device) 
+            delimp_edge_mask = torch.ones(len(edge_mask), dtype=torch.float32)
             delimp_edge_mask[selected_impedges_idx] = 0.0   #remove important edges
             self.__clear_masks__()
-            self.__set_masks__(x, sub_edge_index, delimp_edge_mask)    
-            data = Data(x=x, edge_index=sub_edge_index)
+            self.__set_masks__(data.x, data.edge_index, delimp_edge_mask.to(self.prog_args.device) )    
+            #data = Data(x=x, edge_index=sub_edge_index)
             self.model.eval()
             _, delimp_preds, delimp_embed, h_all= self.model(data)
             delimp_pred = delimp_preds[nodeid]
             self.__clear_masks__()
 
-            retainimp_edge_mask  = torch.ones(len(edge_mask), dtype=torch.float32).to(self.prog_args.device) 
+            retainimp_edge_mask  = torch.ones(len(edge_mask), dtype=torch.float32)
             retainimp_edge_mask[other_notimpedges_idx] =  0.0   #remove not important edges
             self.__clear_masks__()
-            self.__set_masks__(x, sub_edge_index, retainimp_edge_mask)    
-            data = Data(x=x, edge_index=sub_edge_index)
+            self.__set_masks__(data.x, data.edge_index, retainimp_edge_mask.to(self.prog_args.device) )    
+            #data = Data(x=x, edge_index=sub_edge_index)
             self.model.eval()
             _, retainimp_preds, embed, h_all = self.model(data)
             retainimp_pred = retainimp_preds[nodeid]
             self.__clear_masks__()
 
             #delete nodes
-            selected_nodes = self.calculate_selected_nodes(sub_edge_index, edge_mask, select_k)
+            selected_nodes = self.calculate_selected_nodes(data.edge_index, edge_mask, select_k)
             if nodeid not in selected_nodes:
                 selected_nodes.append(nodeid)
             maskout_nodes_list = [node for node in range(len(sub_node)) if node not in selected_nodes or node == nodeid]

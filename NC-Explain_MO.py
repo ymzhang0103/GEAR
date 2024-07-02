@@ -4,7 +4,7 @@
 # In[ ]:
 #CUDA_LAUNCH_BLOCKING=1
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import sys
 sys.path.append('./codes/fornode/')
@@ -23,7 +23,7 @@ import torch
 import torch.optim
 from torch.optim import Adam, SGD
 
-from codes.load_GNNNets_hidden import load_gnnNets_NC, load_GCN_PG
+from codes.load_GNNNets_hidden import load_gnnNets_NC
 from torch_geometric.data import Data
 from torch_geometric.utils import dense_to_sparse
 from torch_geometric.utils import to_networkx
@@ -32,8 +32,6 @@ import os.path as osp
 from codes.mograd import MOGrad
 import math
 import operator
-from collections import OrderedDict
-from torch_geometric.datasets import Planetoid
 
 def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angle, coff=None):
     def train_MO(iter, args):
@@ -106,14 +104,6 @@ def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angl
                 random_edge_mask = random_edge_mask_dict[node].to(args.device)
                 new_pred, cf_pred, masked_embed, new_hidden_emb = explainer((sub_feature, sub_adj, nodeid, sub_embed, tmp), training=True)
                 
-                #random mask predict
-                sub_edge_index = dense_to_sparse(torch.tensor(sub_adj.todense()))[0]
-                explainer.__set_masks__(sub_feature, sub_edge_index, 1-random_edge_mask)
-                data = Data(x=sub_feature, edge_index=sub_edge_index)
-                random_output, random_probs, cf_embed, _ = model(data)
-                random_cf_node_pred = random_probs[nodeid]
-                explainer.__clear_masks__()
-                
                 if "ce" in args.loss_flag:
                     l,pl,ll,cl, hl = explainer.loss_ce_hidden(new_hidden_emb, sub_hidden_emb, new_pred, old_pred_label, sub_label_tensors[newid], nodeid)
                     vl = 0
@@ -126,7 +116,7 @@ def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angl
                 elif "pl" in args.loss_flag:
                     l, pl, ll, cl, vl, sl, hl, cfl = explainer.loss_pl_hidden(new_hidden_emb, sub_hidden_emb, new_pred, cf_pred, sub_output[nodeid])
                 elif "pdiff" in args.loss_flag:
-                    l, pl, ll, cl, hl, cfl = explainer.loss_diff_hidden(new_hidden_emb, sub_hidden_emb, new_pred, cf_pred, sub_output[nodeid], random_cf_node_pred)
+                    l, pl, ll, cl, hl, cfl = explainer.loss_diff_hidden(new_hidden_emb, sub_hidden_emb, new_pred, cf_pred, sub_output[nodeid])
                     vl = 0
                     sl = 0  
                 elif "CF" == args.loss_flag:
@@ -206,7 +196,7 @@ def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angl
                 coslist, grads, grads_new = optimizer.get_grads(losses)
                 loss.backward()   #original
             elif "CAGrad" in optimal_method:
-                grads, grads_new = optimizer.cagrad_backward(losses, dominant_index)
+                grads, grads_new = optimizer.backward_adjust_grad(losses, dominant_index)
             
             f_train_grad.write("epoch={}\n".format(epoch))
             f_train_grad.write("grads={}\n".format([list(g.cpu().numpy()) for g in grads]))
@@ -654,7 +644,6 @@ def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angl
 
     args.dataset = "BA_shapes"
     #args.dataset="BA_community"
-    #args.dataset="PubMed"
     save_map = "MO_LISA_TEST_LOGS_NEW/"+args.dataset.upper() +"_loss"
     save_map = save_map + "_" + loss_type
     if hidden_layer:
@@ -672,20 +661,20 @@ def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angl
         save_map = save_map + "_angle"+str(angle)
     if dominant_loss[0]:
          save_map = save_map + "_dominant_"+dominant_loss[0]
-    #save_map = "LISA_TEST_LOGS/BA_SHAPES_final"
     save_map = save_map + "_fiveGCN/"
-    #debug loss
-    #save_map = save_map + "_debugloss/"
 
     print("save_map: ", save_map)
     if not os.path.exists(save_map):
         os.makedirs(save_map)
+    #save GEAR model
+    if not os.path.exists("model_weights/"):   
+        os.makedirs("model_weights/")
     
     args.add_edge_num = 0
     if args.add_edge_num==0:
-        filename = '/home/liuli/zhangym/torch_projects/datasets/'+args.dataset+'/raw/' + args.dataset + '.pkl'
+        filename = 'datasets/'+args.dataset+'/raw/' + args.dataset + '.pkl'
     else:
-        filename = '/home/liuli/zhangym/torch_projects/datasets/'+args.dataset+'/raw/' + args.dataset + '-' + str(args.add_edge_num) + '.pkl'
+        filename = 'datasets/'+args.dataset+'/raw/' + args.dataset + '-' + str(args.add_edge_num) + '.pkl'
     
     #train
     args.model_filename = args.dataset+'_' + str(args.add_edge_num)
@@ -751,56 +740,30 @@ def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angl
         if not os.path.exists(save_map+str(iter)):
             os.makedirs(save_map+str(iter))
         #load data
-        if args.dataset.lower() == "pubmed":
-            pubmed_dataset = Planetoid(root=args.dataset_root, name=args.dataset)
-            data = pubmed_dataset.data
-            num_class = pubmed_dataset.num_classes
-            features = data.x
-            edge_index = data.edge_index
-            label = data.y
-            adj =  torch.sparse_coo_tensor(indices=edge_index, values= torch.ones(edge_index.shape[1])).to_dense()
-            adj = csr_matrix(adj.numpy())
-            edge_label_matrix = None
-            num_nodes = data.train_mask.shape[0]
-            train_mask = torch.tensor([False] * num_nodes)
-            val_mask = torch.tensor([False] * num_nodes)
-            test_mask = torch.tensor([False] * num_nodes)
-            node_index = list(range(num_nodes))
-            random.seed(2023)
-            random.shuffle(node_index)
-            train_mask[node_index[ : math.floor(num_nodes*0.8)]] =True
-            val_mask[node_index[math.floor(num_nodes*0.8) : math.floor(num_nodes*0.9)]] = True
-            test_mask[node_index[math.floor(num_nodes*0.9) : ]] = True
-        else:
-            #with open('./dataset/' + args.dataset + '.pkl', 'rb') as fin:
-            with open(filename, 'rb') as fin:
-                adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, edge_label_matrix = pkl.load(fin)
+        with open(filename, 'rb') as fin:
+            adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, edge_label_matrix = pkl.load(fin)
 
-            num_class = y_train.shape[1]
-            #edge_index = dense_to_sparse(torch.from_numpy(adj))[0]
-            adj = csr_matrix(adj)
-            support = preprocess_adj(adj, norm=True)
+        num_class = y_train.shape[1]
+        #edge_index = dense_to_sparse(torch.from_numpy(adj))[0]
+        adj = csr_matrix(adj)
+        support = preprocess_adj(adj, norm=True)
 
-            features_tensor = torch.tensor(features).type(torch.float32)
-            edge_index = torch.LongTensor([*support[0]]).t().to(args.device)
-            edge_data = torch.FloatTensor([*support[1]]).to(args.device)
-            # LET OP: i moet getransposed worden om sparse tensor te maken met pytorch
-            support_tensor = torch.sparse_coo_tensor(edge_index, edge_data, torch.Size([*support[2]]))
-            support_tensor = support_tensor.type(torch.float32)
+        features_tensor = torch.tensor(features).type(torch.float32)
+        edge_index = torch.LongTensor([*support[0]]).t().to(args.device)
+        edge_data = torch.FloatTensor([*support[1]]).to(args.device)
+        # LET OP: i moet getransposed worden om sparse tensor te maken met pytorch
+        support_tensor = torch.sparse_coo_tensor(edge_index, edge_data, torch.Size([*support[2]]))
+        support_tensor = support_tensor.type(torch.float32)
 
-            all_label = train_mask.reshape(-1, 1) * y_train + val_mask.reshape(-1, 1) * y_val + test_mask.reshape(-1, 1) * y_test
-            label = np.where(all_label)[1]
-            
-            y = torch.from_numpy(label).to(args.device)
-            data = Data(x=features_tensor, y=y, edge_index=edge_index)
-            data.train_mask = torch.from_numpy(train_mask)
-            data.val_mask = torch.from_numpy(val_mask)
-            data.test_mask = torch.from_numpy(test_mask)
+        all_label = train_mask.reshape(-1, 1) * y_train + val_mask.reshape(-1, 1) * y_val + test_mask.reshape(-1, 1) * y_test
+        label = np.where(all_label)[1]
+        
+        y = torch.from_numpy(label).to(args.device)
+        data = Data(x=features_tensor, y=y, edge_index=edge_index)
+        data.train_mask = torch.from_numpy(train_mask)
+        data.val_mask = torch.from_numpy(val_mask)
+        data.test_mask = torch.from_numpy(test_mask)
 
-        #load trained GCN (PGE)
-        ''' model = load_GCN_PG(GNNmodel_ckpt_path, input_dim=features.shape[1], output_dim=y_train.shape[1], device=device)
-        model.eval()
-        embeds = model.embedding((features_tensor,support_tensor)).cpu().detach().numpy()'''
         #load trained GCN (survey)
         GNNmodel_ckpt_path = osp.join('GNN_checkpoint', args.dataset+"_"+str(iter), 'gcn_best.pth') 
         model = load_gnnNets_NC(GNNmodel_ckpt_path, input_dim=data.x.shape[1], output_dim=num_class, device = args.device)
@@ -881,20 +844,6 @@ def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angl
             f = open(save_map + str(iter) + "/" + "LOG_" + testmodel_filename + "_test.txt", "w")
             savedDict = torch.load(save_map + str(iter) + "/" + testmodel_filename + ".pt") 
             explainer.load_state_dict(savedDict)
-            #savedkeys = [key for key in savedDict.keys() if key !='node_feat_mask']
-            #newDict = {key:savedDict[key] for key in savedkeys}
-            #ckpt = torch.load(ckpt_path)
-            '''new_state_dic = OrderedDict()
-            for key, value in explainer.state_dict().items():
-                if "lin." in key:
-                    old_key = key.replace("lin.", "")
-                else:
-                    old_key = key
-                if "gnn_layers" in old_key:
-                    new_state_dic[key] = savedDict[old_key].T
-                else:
-                    new_state_dic[key] = savedDict[old_key]
-            explainer.load_state_dict(new_state_dic)'''
         else:
             f = open(save_map + str(iter) + "/" + "LOG_" + args.model_filename + "_BEST.txt", "w")
             tik = time.time()
@@ -930,9 +879,6 @@ def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angl
             sub_adj, sub_feature, sub_embed, sub_label = sub_adjs[newid], sub_features[newid], sub_embeds[newid], sub_labels[newid]
             sub_edge_index = torch.tensor([sub_adj.row, sub_adj.col], dtype=torch.int64)
             nodeid = 0
-            #use fullgraph prediction
-            #origin_pred = outputs[node].to(args.device)
-            #use subgraph prediction
             origin_pred = sub_outputs[newid][nodeid]
 
             auc_onenode, ndcg_onenode, real, pred = explain_test(explainer, node, origin_pred)
@@ -952,7 +898,7 @@ def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angl
                 e_labels_dict[node] = torch.tensor(sub_edge_labels[newid].todense())[sub_edge_index[0], sub_edge_index[1]]
 
             #record hidden embedding and cosine similarity
-            record_hidden_info(explainer, node, loss_type)
+            #record_hidden_info(explainer, node, loss_type)
 
             if plot_flag:
                 #plot(node, label, iter)
@@ -984,13 +930,10 @@ def main(iteration, optimal_method, loss_type, hidden_layer, dominant_loss, angl
             f.write("node,{}".format(node) + ",auc_onenode,{}".format(auc_onenode) + ",ndcg_onenode,{}".format(ndcg_onenode)  + ",time,{}".format(tok - tik) + "\n")
         f_hidden.close()
 
-        if args.dataset == "PubMed":
-            auc=0
+        if len(np.unique(reals))==1 or len(np.unique(preds))==1:
+            auc = -1
         else:
-            if len(np.unique(reals))==1 or len(np.unique(preds))==1:
-                auc = -1
-            else:
-                auc = roc_auc_score(reals, preds)
+            auc = roc_auc_score(reals, preds)
         ndcg = np.mean(ndcgs)
         auc_all.append(auc)
         ndcg_all.append(ndcg)
@@ -1377,7 +1320,7 @@ def subgraph_mask(nodeid, explainer, model, sub_feature, sub_edge_index, edge_ma
 
 def test_explainmodel(testnodes):
     args.dataset = "BA_shapes"
-    filename = '/home/liuli/zhangym/torch_projects/datasets/'+args.dataset+'/raw/' + args.dataset + '.pkl'
+    filename = '../datasets/'+args.dataset+'/raw/' + args.dataset + '.pkl'
     GNNmodel_ckpt_path = osp.join('model_weights', args.dataset, 'gcn_best.pth')
     save_map = "MO_LISA_TEST_LOGS/BA_SHAPES_loss_pdiff_CF_LM_iter1_elr0003_epoch1000_MO-GradVac_angle45_dominant_pdiff-1divide-cf/0/"
     explainmodel_ckpt_path = save_map+"BA_shapes_0_BEST.pt"
@@ -1535,17 +1478,16 @@ if __name__ == "__main__":
     for optimal_method in optimal_method_arr:
         for loss_type in loss_type_arr: 
             if "weightsum" in optimal_method:
-                #coff_arr = [1.0, 5.0, 10.0, 50.0, 100.0]
-                coff_arr = [1.0]
+                coff_arr = [1.0, 5.0, 10.0, 50.0, 100.0]
                 for coff in coff_arr:
                     main(iteration, optimal_method, loss_type, "alllayer", (None,None), None, coff)
             elif "getGrad" in optimal_method:
                 main(iteration, optimal_method, loss_type, "alllayer", ("pdiff-CF-mean",[0,2]), None)
             elif "MO" in optimal_method:
-                dominant_loss_dic = {"mask":3, "conn":4}    #"pdiff": 0, "hidden":1, "CF":2    #{"KL":0, "hidden":1}  # "PL":0, "value":1, "hidden":2 , "mask":3, "con":4, "CF":5, "KL":0, "hidden":1
-                #dominant_loss_dic = {"pdiff-CF-disector": [0,2]}   #None: None, "pdiff-CF-disector": [0,2],  "CF": 2
+                #dominant_loss_dic = {"pdiff": 0, "hidden":1, "CF":2, "mask":3, "conn":4}   
+                dominant_loss_dic = {"pdiff-CF-disector": [0,2]}   #{"pdiff-CF-mean": [0,2]},  "pdiff-CF-disector": [0,2]
                 #dominant_loss_dic = {None: None}
-                angle_arr = [45]    #[90, 60, 45, 30]
+                angle_arr = [45]    #[90, 75, 60, 45, 30, 15]
                 for dominant_loss in dominant_loss_dic.items():
                         for angle in angle_arr:
                             if "hidden" in loss_type:

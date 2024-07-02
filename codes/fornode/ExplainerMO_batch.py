@@ -8,6 +8,7 @@ from math import sqrt
 from torch import Tensor
 
 import torch.nn.functional as F
+#from memory_profiler import profile
 
 
 class ExplainerMO(nn.Module):
@@ -35,7 +36,7 @@ class ExplainerMO(nn.Module):
         self.model = model
         self.mask_act = 'sigmoid'
         # self.label = tf.argmax(tf.cast(label,tf.float32),axis=-1)
-        self.params = []
+        #self.params = []
 
         self.softmax = nn.Softmax(dim=0)
 
@@ -56,16 +57,18 @@ class ExplainerMO(nn.Module):
         std = torch.nn.init.calculate_gain('relu') * sqrt(2.0 / (2 * N))
         #std = torch.nn.init.calculate_gain('sigmoid') * sqrt(2.0 / (2 * N))
 
-        if edge_mask is None:
+        '''if edge_mask is None:
             self.edge_mask = torch.randn(E) * std + init_bias
         else:
-            self.edge_mask = edge_mask
-
-        self.edge_mask.to(self.device)
+            self.edge_mask = edge_mask'''
+        if edge_mask is None:
+            edge_mask = torch.randn(E) * std + init_bias
+        #self.edge_mask.to(self.device)
         for module in self.model.modules():
             if isinstance(module, MessagePassing):
                 module._explain = True
-                module._edge_mask = self.edge_mask
+                #module._edge_mask = self.edge_mask
+                module._edge_mask = edge_mask
 
     def __clear_masks__(self):
         """ clear the edge weights to None, and set the explain flag to :obj:`False` """
@@ -74,30 +77,29 @@ class ExplainerMO(nn.Module):
                 module._explain = False
                 module._edge_mask = None
         #self.node_feat_masks = None
-        self.edge_mask = None
+        #self.edge_mask = None
 
-    def _masked_adj(self,mask,adj):
-        mask = mask.to(self.device)
-        sym_mask = mask
-        sym_mask = (sym_mask.clone() + sym_mask.clone().T) / 2
+    def _masked_adj(self, mask, adj):
+        #mask = mask.to(self.device)
+        #sym_mask = mask
+        #sym_mask = (sym_mask.clone() + sym_mask.clone().T) / 2
+        #sym_mask = (mask + mask.T) / 2
 
         # Create sparse tensor TODO: test and "maybe" a transpose is needed somewhere
-        sparseadj = torch.sparse_coo_tensor(
+        '''sparseadj = torch.sparse_coo_tensor(
             indices=torch.transpose(torch.cat([torch.unsqueeze(torch.Tensor(adj.row),-1), torch.unsqueeze(torch.Tensor(adj.col),-1)], dim=-1), 0, 1).to(torch.int64),
             values=adj.data,
             size=adj.shape
-        )
+        )'''
+        #adj = sparseadj.coalesce().to_dense().to(torch.float32).to(self.device) #FIXME: tf.sparse.reorder was also applied, but probably not necessary. Maybe it needs a .coalesce() too tho?
+        #self.adj = adj
 
-        adj = sparseadj.coalesce().to_dense().to(torch.float32).to(self.device) #FIXME: tf.sparse.reorder was also applied, but probably not necessary. Maybe it needs a .coalesce() too tho?
-        self.adj = adj
-
-        masked_adj = torch.mul(adj, sym_mask)
-
+        #masked_adj = torch.mul(adj, sym_mask)
+        masked_adj = torch.mul(adj,  (mask + mask.T) / 2)
         num_nodes = adj.shape[0]
-        ones = torch.ones((num_nodes, num_nodes))
-        diag_mask = ones.to(torch.float32) - torch.eye(num_nodes)
-        diag_mask = diag_mask.to(self.device)
-        return torch.mul(masked_adj,diag_mask)
+        diag_mask = torch.ones((num_nodes, num_nodes)) - torch.eye(num_nodes)
+        diag_mask = diag_mask
+        return torch.mul(masked_adj, diag_mask)
 
 
     def concrete_sample(self, log_alpha, beta=1.0, training=True):
@@ -115,77 +117,89 @@ class ExplainerMO(nn.Module):
         return gate_inputs
 
 
-    def forward(self,inputs,training=False):
-        x, adj, nodeid, embed, tmp = inputs
-        x = x.to(self.device)
-
-        self.tmp = tmp
-        if not isinstance(embed[adj.row], torch.Tensor):
-            f1 = torch.tensor(embed[adj.row]).to(self.device)  # .to(self.device)  # <-- torch way to do tf.gather(embed, self.row)
-            f2 = torch.tensor(embed[adj.col]).to(self.device)
+    #@profile
+    def forward(self, inputs, training=False):
+        #print("111111",    torch.cuda.memory_allocated())
+        #temp_memoy = torch.cuda.memory_allocated()
+        nodeid, data, adj, embed, tmp = inputs
+        
+        '''if not isinstance(embed[edge_index[0]], torch.Tensor):
+            f1 = torch.tensor(embed[edge_index[0]])  # .to(self.device)  # <-- torch way to do tf.gather(embed, self.row)
+            f2 = torch.tensor(embed[edge_index[1]])
         else:
-            f1 = embed[adj.row].to(self.device)  # .to(self.device)  # <-- torch way to do tf.gather(embed, self.row)
-            f2 = embed[adj.col].to(self.device)
+            f1 = embed[edge_index[0]]  # .to(self.device)  # <-- torch way to do tf.gather(embed, self.row)
+            f2 = embed[edge_index[1]]
 
         selfemb = embed[nodeid] if isinstance(embed, torch.Tensor) else torch.tensor(embed[nodeid])
-        selfemb = torch.unsqueeze(selfemb, 0).repeat([f1.shape[0], 1]).to(self.device)
-        f12self = torch.cat([f1, f2, selfemb], dim=-1)
+        selfemb = torch.unsqueeze(selfemb, 0).repeat([edge_index.shape[1], 1])   #.to(self.device)
+        f12self = torch.cat([f1, f2, selfemb], dim=-1)'''
 
-        h = f12self
-        h = h.to(self.device)
+        h = torch.cat([embed[data.edge_index[0]], embed[data.edge_index[1]], torch.unsqueeze(embed[nodeid], 0).repeat([data.edge_index.shape[1], 1])], dim=-1)
+        #print("222222",    torch.cuda.memory_allocated()- temp_memoy)
+        #temp_memoy = torch.cuda.memory_allocated()
+        #h = f12self.to(self.device)
         for elayer in self.elayers:
             h = elayer(h)
-
-        self.values = torch.reshape(h, [-1,])
-
-        values = self.concrete_sample(self.values,beta=tmp,training=training)
-
-        sparse_edge_mask = torch.sparse_coo_tensor(
-            indices=torch.transpose(torch.cat([torch.unsqueeze(torch.tensor(adj.row),-1), torch.unsqueeze(torch.tensor(adj.col),-1)], dim=-1), 0, 1).to(torch.int64).to(self.device),
+        #self.values = torch.reshape(h, [-1,])
+        h = self.concrete_sample(torch.reshape(h, [-1,]), beta=tmp,training=training)
+        #print("333333",    torch.cuda.memory_allocated()- temp_memoy)
+        #temp_memoy = torch.cuda.memory_allocated()
+        
+        '''sparse_edge_mask = torch.sparse_coo_tensor(
+            indices=edge_index, 
+            values=values.to(edge_index.device),
+            size=[x.shape[0], x.shape[0]]
+        )'''
+        '''sparse_edge_mask = torch.sparse_coo_tensor(
+            indices=torch.transpose(torch.cat([torch.unsqueeze(torch.tensor(edge_index[0]),-1), torch.unsqueeze(torch.tensor(edge_index[1]),-1)], dim=-1), 0, 1).to(torch.int64).to(self.device),
             values=values,
             size=adj.shape
-        )
-
-        mask = sparse_edge_mask.coalesce().to_dense().to(torch.float32)  #FIXME: again a reorder() is omitted, maybe coalesce
-        masked_adj = self._masked_adj(mask,adj)
-
-        self.mask = mask
-        self.masked_adj = masked_adj
-
+        )'''
+        self.mask = torch.sparse_coo_tensor(
+            indices=data.edge_index, 
+            values=h,
+            size=[data.x.shape[0], data.x.shape[0]]
+        ).to(adj.device).coalesce().to_dense()  #FIXME: again a reorder() is omitted, maybe coalesce
+        self.masked_adj = self._masked_adj(self.mask, adj)
+        #print("444444",    torch.cuda.memory_allocated()- temp_memoy)
+        #temp_memoy = torch.cuda.memory_allocated()
+        #self.mask = mask
+        #self.masked_adj = masked_adj
         #output = self.model((x,masked_adj))
 
         # modify model
-        edge_index = dense_to_sparse(masked_adj)[0]
-        edge_mask = masked_adj[edge_index[0], edge_index[1]]
+        #edge_index = dense_to_sparse(self.masked_adj)[0]
+        edge_mask = self.masked_adj[data.edge_index[0], data.edge_index[1]].to(self.device)
         self.__clear_masks__()
         #factual predict
-        self.__set_masks__(x, edge_index, edge_mask)
-        data = Data(x=x, edge_index=edge_index)
-        output, probs, masked_embeds, hidden_emb = self.model(data)
-        node_pred = output[nodeid, :]
-        res = self.softmax(node_pred)
+        self.__set_masks__(data.x, data.edge_index, edge_mask)
+        #data = Data(x=x, edge_index=edge_index)
+        _, probs, _, hidden_emb = self.model(data)
+        #masked_embed = masked_embed[nodeid]
+        #node_pred = output[nodeid, :]
+        #res = self.softmax(node_pred)
+        res = probs[nodeid]
         self.__clear_masks__()
+        #print("555555",    torch.cuda.memory_allocated()-temp_memoy)
+        #temp_memoy = torch.cuda.memory_allocated()
 
         #conterfactual predict
-        '''select_k = round(torch.mul(0.2, edge_index.shape[1]).item())
-        selected_impedges_idx = edge_mask.sort(descending=True).indices[:select_k]
-        edge_mask = edge_mask.clone()
-        edge_mask[selected_impedges_idx] = 1-edge_mask[selected_impedges_idx]'''
         #edge_mask[other_notimpedges_idx] = edge_mask[other_notimpedges_idx]
-        #edge_mask = 1-edge_mask
-        self.__set_masks__(x, edge_index, 1-edge_mask)
-        data = Data(x=x, edge_index=edge_index)
-        output, probs, cf_embed, _ = self.model(data)
-        cf_node_pred = output[nodeid, :]
-        cf_res = self.softmax(cf_node_pred)
+        self.__set_masks__(data.x, data.edge_index, 1-edge_mask)
+        #data = Data(x=x, edge_index=edge_index)
+        _, probs, _, _ = self.model(data)
+        #cf_node_pred = output[nodeid, :]
+        #cf_res = self.softmax(cf_node_pred)
+        cf_res = probs[nodeid]
         self.__clear_masks__()
+        #print("666666",    torch.cuda.memory_allocated()-temp_memoy)
+        #temp_memoy = torch.cuda.memory_allocated()
+        return res, cf_res, _, hidden_emb
 
-        return res, cf_res, masked_embeds[nodeid], hidden_emb
 
-
-    def mask_topk(self, nodeid, sub_feature, sub_adj, top_k):
+    def mask_topk(self, nodeid, sub_feature, sub_adj, top_k, masked_adj):
         x = sub_feature.to(self.args.device)
-        edge_mask = self.masked_adj[sub_adj.row, sub_adj.col].detach()
+        edge_mask = masked_adj[sub_adj.row, sub_adj.col].detach()
         sub_edge_index = torch.tensor([sub_adj.row, sub_adj.col], dtype=torch.int64).to(self.args.device)
         select_k = round(top_k/100 * len(sub_edge_index[0]))
         selected_impedges_idx = edge_mask.reshape(-1).sort(descending=True).indices[:select_k]        #按比例选择top_k%的重要边
@@ -218,7 +232,7 @@ class ExplainerMO(nn.Module):
         return maskimp_pred, maskimp_h_all, retainimp_pred, retainimp_h_all
 
 
-    def loss(self, pred, pred_label, label, node_idx, adj_tensor=None):
+    def loss(self, pred, pred_label, label, node_idx, mask):
         """
         Args:
             pred: prediction made by current model
@@ -237,13 +251,13 @@ class ExplainerMO(nn.Module):
         pred_loss = -torch.log(logit)
 
         if self.args.budget<=0:
-            size_loss = torch.sum(self.mask)#len(self.mask[self.mask > 0]) #
+            size_loss = torch.sum(mask)#len(self.mask[self.mask > 0]) #
         else:
             relu = nn.ReLU()
-            size_loss = relu(torch.sum(self.mask)-self.args.budget) #torch.sum(self.mask)
+            size_loss = relu(torch.sum(mask)-self.args.budget) #torch.sum(self.mask)
             
         scale=0.99
-        mask = self.mask*(2*scale-1.0)+(1.0-scale)
+        mask = mask*(2*scale-1.0)+(1.0-scale)
         mask_ent = -mask * torch.log(mask) - (1 - mask) * torch.log(1 - mask)
         mask_ent_loss = torch.mean(mask_ent)
 
@@ -285,7 +299,7 @@ class ExplainerMO(nn.Module):
         """
         label = torch.argmax(label.clone().to(torch.float32), dim=-1)
 
-        pred_label_node = pred_label[node_idx]
+        pred_label_node = pred_label
         logit = pred[pred_label_node]
 
         if self.args.miGroudTruth:

@@ -8,7 +8,7 @@ import torch
 from codes.dataset import MoleculeDataset, SynGraphDataset, SentiGraphDataset, BA_LRP
 from torch.utils.data import random_split, Subset
 from torch_geometric.data import DataLoader
-from codes.load_dataset import MutagenicityDataset, MutagenicityDatasetFull, NCI1Dataset
+from codes.load_dataset import MutagenicityDataset, NCI1Dataset
 import matplotlib.pyplot as plt
 from textwrap import wrap
 import rdkit.Chem as Chem
@@ -17,8 +17,6 @@ from torch_geometric.datasets import MoleculeNet
 def get_dataset(dataset_root, dataset_name):
     if dataset_name.lower() == 'Mutagenicity'.lower():
         return MutagenicityDataset(root=dataset_root, name= dataset_name)
-    elif dataset_name.lower() == 'Mutagenicity_full'.lower():
-        return MutagenicityDatasetFull(root=dataset_root, name= dataset_name)
     elif dataset_name.lower() == 'NCI1'.lower():
         return NCI1Dataset(root=dataset_root, name= dataset_name)
     elif dataset_name.lower() in list(MoleculeDataset.names.keys()):
